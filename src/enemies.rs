@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use crate::common::{tune::EYE_OFFSET, *};
 use crate::effects::Lifetime;
 use crate::level::{MonsterKind, SpawnPlan};
+use crate::monster_model::{build_monster_visual, Dying, MonsterMats, MonsterTextures};
 use crate::physics::{line_of_sight, move_and_slide};
 use crate::player::Player;
 use crate::projectiles::{spawn_projectile, ProjKind};
@@ -44,6 +45,7 @@ fn key_ambush(
     mut mission: ResMut<Mission>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    tex: Res<MonsterTextures>,
     mut sprung: Local<bool>,
     mut q: Query<&mut Enemy>,
     mut sfx: MessageWriter<Sfx>,
@@ -72,32 +74,34 @@ fn key_ambush(
         (MonsterKind::Ogre, Vec3::new(50.0, 1.0, 6.0)),
     ];
     for (kind, pos) in wave {
-        spawn_monster(&mut commands, &mut meshes, &mut materials, kind, pos);
+        spawn_monster(&mut commands, &mut meshes, &mut materials, &tex, kind, pos);
     }
     mission.total_enemies += wave.len() as u32;
     sfx.write(Sfx::global(Sound::Door));
     notify.write(Notify::new("The vault erupts — the dungeon awakens!"));
 }
 
-/// Pop the monster's emissive when it takes a hit (drives `Enemy.flash`).
+/// Pop every body-part's emissive when the monster takes a hit (drives `Enemy.flash`).
 fn enemy_hit_flash(
     time: Res<Time>,
-    mut q: Query<(&mut Enemy, &MeshMaterial3d<StandardMaterial>)>,
+    mut q: Query<(&mut Enemy, &MonsterMats)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let dt = time.delta_secs();
-    for (mut en, mat) in &mut q {
+    for (mut en, mats) in &mut q {
         if en.flash <= 0.0 {
             continue;
         }
         en.flash = (en.flash - dt * 6.0).max(0.0);
-        if let Some(mut m) = materials.get_mut(&mat.0) {
-            let k = en.flash.clamp(0.0, 1.0);
-            m.emissive = LinearRgba::rgb(
-                en.base_emissive.red + 3.0 * k,
-                en.base_emissive.green + 3.0 * k,
-                en.base_emissive.blue + 3.0 * k,
-            );
+        let k = en.flash.clamp(0.0, 1.0);
+        for (handle, base) in &mats.0 {
+            if let Some(mut m) = materials.get_mut(handle) {
+                m.emissive = LinearRgba::rgb(
+                    base.red + 3.0 * k,
+                    base.green + 3.0 * k,
+                    base.blue + 3.0 * k,
+                );
+            }
         }
     }
 }
@@ -136,6 +140,10 @@ pub struct Enemy {
     pub base_emissive: LinearRgba,
     /// Hitscan wind-up (Grunt telegraph): a pending shot resolves at <=0.
     pub windup: f32,
+    /// Accumulated walk-cycle phase (advanced by horizontal speed) for the rig.
+    pub gait: f32,
+    /// Attack animation envelope (1 at strike, decays to 0) driving the weapon arm.
+    pub atk_anim: f32,
 }
 
 struct MStats {
@@ -184,32 +192,18 @@ pub fn spawn_monster(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    tex: &MonsterTextures,
     kind: MonsterKind,
     pos: Vec3,
 ) {
     let s = stats(kind);
-    let radius = s.half.x;
-    let length = (s.half.y * 2.0 - radius * 2.0).max(0.1);
-    let body = meshes.add(Capsule3d::new(radius, length));
-    let mat = materials.add(StandardMaterial {
-        base_color: s.color,
-        emissive: s.emissive,
-        perceptual_roughness: 0.8,
-        ..default()
-    });
-    let eye_mat = materials.add(StandardMaterial {
-        base_color: rgb(1.0, 0.3, 0.1),
-        emissive: LinearRgba::rgb(6.0, 0.6, 0.1),
-        unlit: true,
-        ..default()
-    });
-    let eye_mesh = meshes.add(Sphere::new(0.08));
     let eye_h = s.half.y * 0.6;
-    commands
+    // The root is an invisible transform carrying the AI/physics; the visible,
+    // articulated, textured model is built as a bone hierarchy beneath it.
+    let root = commands
         .spawn((
-            Mesh3d(body),
-            MeshMaterial3d(mat),
             Transform::from_translation(pos + Vec3::Y * s.half.y),
+            Visibility::Visible,
             Enemy {
                 kind,
                 vel: Vec3::ZERO,
@@ -231,6 +225,8 @@ pub fn spawn_monster(
                 flash: 0.0,
                 base_emissive: s.emissive,
                 windup: 0.0,
+                gait: 0.0,
+                atk_anim: 0.0,
             },
             Health::new(s.health),
             Faction::Monster,
@@ -239,15 +235,9 @@ pub fn spawn_monster(
             LevelEntity,
             Name::new(format!("{kind:?}")),
         ))
-        .with_children(|p| {
-            for sx in [-0.18f32, 0.18] {
-                p.spawn((
-                    Mesh3d(eye_mesh.clone()),
-                    MeshMaterial3d(eye_mat.clone()),
-                    Transform::from_xyz(sx, eye_h, -radius * 0.9),
-                ));
-            }
-        });
+        .id();
+    let mats = build_monster_visual(commands, meshes, materials, tex, kind, root);
+    commands.entity(root).insert(MonsterMats(mats));
 }
 
 /// Spawn every monster from the level's SpawnPlan. Runs in the OnEnter chain.
@@ -256,11 +246,12 @@ pub fn spawn_monsters(
     plan: Res<SpawnPlan>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    tex: Res<MonsterTextures>,
     mut mission: ResMut<Mission>,
 ) {
     mission.total_enemies = plan.monsters.len() as u32;
     for spawn in &plan.monsters {
-        spawn_monster(&mut commands, &mut meshes, &mut materials, spawn.kind, spawn.pos);
+        spawn_monster(&mut commands, &mut meshes, &mut materials, &tex, spawn.kind, spawn.pos);
     }
 }
 
@@ -271,7 +262,7 @@ fn enemy_ai(
     gfx: Res<GfxAssets>,
     mut commands: Commands,
     mut rng_state: Local<u32>,
-    mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Knockback), Without<Player>>,
+    mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Knockback), (Without<Player>, Without<Dying>)>,
     q_player: Query<(Entity, &Transform), With<Player>>,
     mut dmg: MessageWriter<DamageEvent>,
     mut sfx: MessageWriter<Sfx>,
@@ -300,6 +291,7 @@ fn enemy_ai(
         en.attack_cd = (en.attack_cd - dt).max(0.0);
         en.pain = (en.pain - dt).max(0.0);
         en.pain_cd = (en.pain_cd - dt).max(0.0);
+        en.atk_anim = (en.atk_anim - dt * 3.5).max(0.0);
         en.bob += dt * 3.0;
 
         let pos = tf.translation;
@@ -367,6 +359,7 @@ fn enemy_ai(
         // Initiate an attack if able (Grunt telegraphs via a wind-up first).
         if !staggered && in_attack && en.attack_cd <= 0.0 && dist > 0.3 {
             en.attack_cd = en.cd;
+            en.atk_anim = 1.0;
             if en.kind == MonsterKind::Grunt {
                 en.windup = 0.35;
                 en.flash = en.flash.max(0.5); // brief "aim" glint
@@ -401,6 +394,10 @@ fn enemy_ai(
                 en.vel.y = 0.0;
             }
         }
+
+        // Advance the walk-cycle phase by how fast we're actually moving.
+        let speed_h = Vec3::new(en.vel.x, 0.0, en.vel.z).length();
+        en.gait += speed_h * dt * 2.4;
     }
 }
 

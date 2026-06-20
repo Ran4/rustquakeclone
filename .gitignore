@@ -9,6 +9,13 @@ rustc-ice-*.txt
 # audio_gen::generate(), so they are build artifacts, not source.
 /assets/sounds/
 
+# Local secrets (OpenAI API key used to generate monster textures)
+.env
+
+# QC_GALLERY debug screenshots
+/gallery_*.png
+/monster_gallery.png
+
 # Editor / OS cruft
 *.swp
 *~

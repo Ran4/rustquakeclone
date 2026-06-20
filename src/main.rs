@@ -10,9 +10,11 @@ mod combat;
 mod common;
 mod effects;
 mod enemies;
+mod gallery;
 mod gamestate;
 mod hud;
 mod level;
+mod monster_model;
 mod physics;
 mod pickups;
 mod player;
@@ -44,6 +46,7 @@ fn assets_dir() -> String {
 
 fn main() {
     let assets = assets_dir();
+    let gallery = std::env::var("QC_GALLERY").is_ok();
     // Synthesize the SFX set into <assets>/sounds/ before the engine starts so
     // the AssetServer (pointed at the same dir) can load them.
     audio_gen::generate(&assets);
@@ -96,13 +99,23 @@ fn main() {
             combat::CombatPlugin,
             effects::EffectsPlugin,
             enemies::EnemiesPlugin,
+            monster_model::MonsterModelPlugin,
             pickups::PickupsPlugin,
             gamestate::GameStatePlugin,
-            hud::HudPlugin,
             audio::AudioPlugin,
-        ))
-        // world setup (runs at startup and on every restart into Playing)
-        .add_systems(
+        ));
+
+    // World setup runs at startup and on every restart into Playing. The optional
+    // QC_GALLERY mode swaps the real level for a line-up of every monster and
+    // screenshots it — a headless visual check of the rendered models.
+    if gallery {
+        app.add_systems(
+            OnEnter(GameState::Playing),
+            (weapons::create_weapon_vis, gallery::setup),
+        )
+        .add_systems(Update, gallery::tick);
+    } else {
+        app.add_plugins(hud::HudPlugin).add_systems(
             OnEnter(GameState::Playing),
             (
                 weapons::create_weapon_vis,
@@ -114,6 +127,7 @@ fn main() {
             )
                 .chain(),
         );
+    }
 
     // Optional headless self-test: drives the player forward + fires so we can
     // validate movement/collision/combat without a human at the controls.

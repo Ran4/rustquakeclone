@@ -110,13 +110,13 @@ fn apply_damage(
 
 fn check_deaths(
     mut commands: Commands,
-    mut q: Query<(Entity, &mut Health, &Faction, &GlobalTransform)>,
+    mut q: Query<(Entity, &mut Health, &Faction, &GlobalTransform, &Transform)>,
     mut sfx: MessageWriter<Sfx>,
     mut next: ResMut<NextState<GameState>>,
     mut mission: ResMut<Mission>,
     gfx: Res<GfxAssets>,
 ) {
-    for (e, mut hp, faction, gt) in &mut q {
+    for (e, mut hp, faction, gt, tf) in &mut q {
         if hp.current > 0.0 || hp.dead {
             continue;
         }
@@ -131,20 +131,17 @@ fn check_deaths(
                 sfx.write(Sfx::at(Sound::EnemyDeath, pos));
                 mission.kills += 1;
                 let overkill = hp.current < -25.0; // rockets / big hits gib
-                commands.entity(e).despawn();
                 if overkill {
+                    // Blown apart: the whole body explodes into gibs.
                     spawn_gibs(&mut commands, &gfx, pos, 16);
+                    commands.entity(e).despawn();
                 } else {
-                    // Leave a corpse that lingers, plus a little blood.
+                    // Killed cleanly: the monster topples over and lingers as a corpse.
                     spawn_gibs(&mut commands, &gfx, pos, 4);
-                    commands.spawn((
-                        Mesh3d(gfx.unit_cube.clone()),
-                        MeshMaterial3d(gfx.gib.clone()),
-                        Transform::from_translation(Vec3::new(pos.x, pos.y - 0.5, pos.z))
-                            .with_scale(Vec3::new(1.1, 0.3, 1.5)),
-                        Corpse(8.0),
-                        LevelEntity,
-                    ));
+                    let yaw = tf.rotation.to_euler(EulerRot::YXZ).0;
+                    commands
+                        .entity(e)
+                        .insert(crate::monster_model::Dying { t: 0.0, yaw });
                 }
             }
         }

@@ -52,6 +52,17 @@ Grunt (hitscan soldier) · Enforcer (energy bolts) · Knight (fast melee) · Scr
 Ogre (grenade-lobbing bruiser + chainsaw) · Death Knight (mini-boss). Each has line-of-sight
 perception and an Idle → Chase → Attack AI.
 
+Every monster is a **procedurally-assembled skeletal model**: a hierarchy of parented bone
+entities (pelvis → torso → head/jaw, articulated arms and legs, plus per-kind extras — the
+Ogre's chainsaw, the Scrag's wings and tail, the Knight's and Death Knight's swords). Each body
+part is a primitive mesh (box/capsule/sphere/cone) skinned with a texture, and a procedural
+animator drives the bones every frame — a speed-scaled walk cycle, idle breathing, attack swings,
+a pain flinch and a death topple. No binary mesh assets: the skeleton *is* the entity hierarchy.
+
+The skin textures live in `assets/textures/monsters/` and were generated with OpenAI's
+`gpt-image-2` (seamless dark-fantasy albedo maps — rotting flesh, flak armor, demon hide, obsidian
+hell-plate, etc.).
+
 ## What makes it feel like Quake
 
 - **Movement physics**: friction + ground/air acceleration with the classic air-strafe speed cap,
@@ -74,6 +85,8 @@ perception and an Idle → Chase → Attack AI.
 | `projectiles.rs` | Rockets, grenades, nails, enemy bolts |
 | `combat.rs` | Damage, armor, explosions, death, gibs |
 | `enemies.rs` | Monster spawning + AI state machine + attacks |
+| `monster_model.rs` | Procedural skeletal monster rigs, textures, bone animation + death topple |
+| `gallery.rs` | `QC_GALLERY=1` debug mode: render each monster solo and screenshot it |
 | `pickups.rs` | Health, armor, ammo, weapons, key |
 | `level.rs` | The brush-built map + spawn plan |
 | `gamestate.rs` | Objective, door, lava, exit, death/victory, restart |
@@ -83,3 +96,6 @@ perception and an Idle → Chase → Attack AI.
 
 Run `QC_AUTOTEST=1 cargo run` to launch a self-driving smoke test (the player walks forward and
 fires while logging position/health) — handy for headless validation.
+
+Run `QC_GALLERY=1 cargo run` to spawn each monster in turn, lit and centered, and save a close-up
+`gallery_<n>_<kind>.png` of every model — handy for eyeballing the rigs and textures.
