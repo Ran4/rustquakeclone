@@ -104,6 +104,106 @@ WORLD: list[Image] = [
     ),
 ]
 
+# Per-theme world tilesets for the campaign's six new levels. Each theme has the
+# same six surfaces (floor/wall/ceiling/trim/hazard/door); `metal.png` is shared
+# from the base set. Folders mirror `ThemeId` in src/level.rs.
+def _theme(dir: str, surfaces: dict[str, str]) -> list[Image]:
+    return [Image(f"textures/world/{dir}/{name}.png", SEAMLESS + desc) for name, desc in surfaces.items()]
+
+
+THEMES: list[Image] = (
+    # --- Frostspire Keep: a winter ice fortress ---
+    _theme("frost", {
+        "floor": "Snow-dusted pale blue-grey ice flagstones, hairline frost "
+        "cracks, packed snow settled into the grooves, glittering rime, top-down.",
+        "wall": "Frost-rimed grey stone fortress blocks, sheets of pale-blue ice "
+        "and small icicles clinging to the joints, snow on the ledges, cold.",
+        "ceiling": "Dark blue-grey frozen stone ceiling crusted with frost "
+        "crystals and thin icicles, shadowed and icy, near-black blue.",
+        "trim": "Frosted silver-blue carved metal trim with angular runic "
+        "engravings, glinting ice glaze over pale steel.",
+        "hazard": "Cracked frozen-lake surface, jagged broken ice plates over "
+        "glowing pale-cyan freezing water in the cracks, top-down.",
+        "door": "Heavy frost-covered iron portcullis gate, banded studded metal "
+        "sheathed in pale-blue ice with hanging icicles.",
+    })
+    # --- The Brass Leviathan: a steampunk clockwork foundry ---
+    + _theme("brass", {
+        "floor": "Riveted brass and copper deck plating etched with gear teeth, "
+        "oily warm-metal sheen, bolt heads, faint soot, top-down.",
+        "wall": "Steampunk machine wall of interlocking brass pipes, copper "
+        "panels, pressure gauges and big rivets, warm tarnished gold-bronze.",
+        "ceiling": "Dark sooty iron machine ceiling crossed by brass steam pipes "
+        "and bolted girders, grimy and shadowed.",
+        "trim": "Polished brass gear-toothed ornate trim, interlocking cogs and "
+        "filigree, bright golden machined metal.",
+        "hazard": "Channel of glowing molten metal in a foundry, bright orange-"
+        "yellow liquid brass over a dark cooling crust, sparks, top-down.",
+        "door": "Massive riveted brass bulkhead hatch with a central iron wheel "
+        "valve, banded copper plates and bolts.",
+    })
+    # --- Tomb of the Sunken King: an Egyptian desert tomb ---
+    + _theme("tomb", {
+        "floor": "Sandstone tomb floor of worn golden blocks, drifted sand packed "
+        "into the seams, faint faded hieroglyph carvings, top-down.",
+        "wall": "Carved sandstone tomb wall densely covered in Egyptian "
+        "hieroglyphs and figures with weathered gold and turquoise inlay.",
+        "ceiling": "Sandstone tomb ceiling painted with faded gold stars on deep "
+        "ochre, cracked plaster, dim and dusty.",
+        "trim": "Pharaonic gold trim band with lapis-blue inlay, ankh and eye-of-"
+        "Horus sigils, polished gilt over sandstone.",
+        "hazard": "Cursed glowing quicksand pit, swirling golden-ochre sand with "
+        "faint amber glow seeping up, top-down.",
+        "door": "Massive carved sandstone tomb door with a central scarab seal, "
+        "gold-inlaid hieroglyphs and cracked stone.",
+    })
+    # --- The Verdant Rot: an alien bio-hive / toxic lab ---
+    + _theme("hive", {
+        "floor": "Organic alien hive floor of ridged fleshy membrane laced with "
+        "glowing green veins, slick and wet, biomechanical, top-down.",
+        "wall": "Biomechanical alien wall: ribbed dark chitin and pulsing green-"
+        "veined flesh fused with corroded rusty sci-fi metal panels.",
+        "ceiling": "Dark organic hive ceiling of dripping membranes and hanging "
+        "tendrils, black-green and glistening.",
+        "trim": "Corroded sci-fi metal trim threaded with glowing toxic-green "
+        "energy conduits and warning stripes.",
+        "hazard": "Bubbling radioactive toxic sludge, bright acid-green glowing "
+        "ooze with rising bubbles and froth, top-down.",
+        "door": "Corroded sci-fi blast door fused with alien bio-growth, green "
+        "ooze seeping from the seams, ribbed organic plating.",
+    })
+    # --- The Salt Wraith: a sci-fi sky pirate ship / airship ---
+    + _theme("pirate", {
+        "floor": "Weathered ship-deck wooden planks, caulked tar seams, salt-"
+        "bleached grey-brown oak, brass nail heads, top-down.",
+        "wall": "Dark tarred ship hull planking with brass bracing straps, "
+        "porthole rivets and rope lashings, nautical and worn.",
+        "ceiling": "Wooden ship overhead deck beams with rope rigging and a hung "
+        "lantern glow, dark varnished oak.",
+        "trim": "Ornate brass-and-gold ship railing filigree with twisted rope "
+        "molding, polished nautical metal.",
+        "hazard": "Glowing electric-blue plasma engine exhaust vent, crackling "
+        "cyan energy over dark grating, top-down.",
+        "door": "Heavy galleon hatch of brass-bound dark oak planks with a ship's "
+        "wheel and iron studs.",
+    })
+    # --- Sanctum of the Void: the cosmic crystal endgame ---
+    + _theme("void", {
+        "floor": "Polished black obsidian floor shot through with glowing violet "
+        "crystal veins and faint starlight flecks, mirror-dark, top-down.",
+        "wall": "Obsidian void-temple wall embedded with glowing purple crystals "
+        "and etched glowing silver arcane runes, deep cosmic black.",
+        "ceiling": "Cosmic starfield ceiling, deep black-purple nebula scattered "
+        "with stars and faint violet light, voidlike.",
+        "trim": "Silver arcane runed trim glowing violet, geometric eldritch "
+        "engraving over polished dark metal.",
+        "hazard": "Swirling violet void rift, churning magenta-purple antimatter "
+        "energy with glowing filaments, top-down.",
+        "door": "Obsidian gate inlaid with glowing violet sigils around a central "
+        "glowing purple crystal core, eldritch.",
+    })
+)
+
 # Monster skins live here too so the manifest is the *complete* registry. These
 # PNGs already ship in the repo, so a normal run skips them; they are listed so
 # the set is reproducible if one is ever deleted.
@@ -152,7 +252,7 @@ MONSTERS: list[Image] = [
           "blued metal with etched runes, no lighting.", resize=None),
 ]
 
-MANIFEST: list[Image] = WORLD + MONSTERS
+MANIFEST: list[Image] = WORLD + THEMES + MONSTERS
 
 
 def load_env_key() -> str | None:

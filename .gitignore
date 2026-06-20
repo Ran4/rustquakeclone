@@ -12,9 +12,10 @@ rustc-ice-*.txt
 # Local secrets (OpenAI API key used to generate monster textures)
 .env
 
-# QC_GALLERY debug screenshots
+# QC_GALLERY / QC_LEVELSHOT debug screenshots
 /gallery_*.png
 /monster_gallery.png
+/levelshot_*.png
 
 # Editor / OS cruft
 *.swp

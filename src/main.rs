@@ -15,6 +15,8 @@ mod gallery;
 mod gamestate;
 mod hud;
 mod level;
+mod levels;
+mod levelshot;
 mod monster_model;
 mod physics;
 mod pickups;
@@ -48,6 +50,8 @@ fn assets_dir() -> String {
 fn main() {
     let assets = assets_dir();
     let gallery = std::env::var("QC_GALLERY").is_ok();
+    let levelshot = std::env::var("QC_LEVELSHOT").is_ok();
+    let preview = gallery || levelshot; // debug screenshot modes: small window, fast saves
     let cfg = config::Config::load();
     // Synthesize the SFX set into <assets>/sounds/ before the engine starts so
     // the AssetServer (pointed at the same dir) can load them.
@@ -61,12 +65,16 @@ fn main() {
                     primary_window: Some(Window {
                         title: "QUAKECLONE — Dimension of the Doomed".into(),
                         present_mode: if cfg.vsync { PresentMode::AutoVsync } else { PresentMode::AutoNoVsync },
-                        mode: if cfg.fullscreen {
+                        mode: if cfg.fullscreen && !preview {
                             WindowMode::BorderlessFullscreen(MonitorSelection::Current)
                         } else {
                             WindowMode::Windowed
                         },
-                        resolution: WindowResolution::new(cfg.width, cfg.height),
+                        resolution: if preview {
+                            WindowResolution::new(1280, 720)
+                        } else {
+                            WindowResolution::new(cfg.width, cfg.height)
+                        },
                         ..default()
                     }),
                     ..default()
@@ -89,6 +97,9 @@ fn main() {
         .init_resource::<WorldColliders>()
         .init_resource::<GfxAssets>()
         .init_resource::<Mission>()
+        .init_resource::<RunState>()
+        .init_resource::<LevelStyle>()
+        .init_resource::<LevelIntro>()
         .init_resource::<Sounds>()
         // messages
         .add_message::<DamageEvent>()
@@ -122,6 +133,9 @@ fn main() {
             (weapons::create_weapon_vis, gallery::setup),
         )
         .add_systems(Update, gallery::tick);
+    } else if levelshot {
+        app.add_systems(OnEnter(GameState::Playing), (weapons::create_weapon_vis, levelshot::setup))
+            .add_systems(Update, levelshot::tick.run_if(in_state(GameState::Playing)));
     } else {
         app.add_plugins(hud::HudPlugin).add_systems(
             OnEnter(GameState::Playing),
@@ -144,6 +158,20 @@ fn main() {
             .add_systems(Update, (autotest_drive, autotest_log).run_if(in_state(GameState::Playing)));
     }
 
+    // Optional one-shot screenshot: capture the live game (HUD + level banner)
+    // a couple seconds into Playing, then exit. `QC_SHOT=name` sets the file.
+    if std::env::var("QC_SHOT").is_ok() {
+        app.add_systems(Update, oneshot_screenshot.run_if(in_state(GameState::Playing)));
+    }
+
+    // Optional headless progression test: teleports the player onto each level's
+    // exit so the campaign advances start→…→final win, logging the carried
+    // loadout at every level — validates level progression + weapon carry-over.
+    if std::env::var("QC_EXIT_RUSH").is_ok() {
+        app.add_systems(Update, exit_rush.run_if(in_state(GameState::Playing)))
+            .add_systems(OnEnter(GameState::Victory), || info!("EXITRUSH reached VICTORY — campaign complete"));
+    }
+
     app.run();
 }
 
@@ -151,6 +179,58 @@ fn main() {
 struct AutoTest {
     t: f32,
     elapsed: f32,
+}
+
+/// Capture one screenshot of the live game ~2s into a level (so the intro banner
+/// is still up), then exit. Driven by `QC_SHOT`.
+fn oneshot_screenshot(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut t: Local<f32>,
+    mut shot: Local<bool>,
+) {
+    use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+    *t += time.delta_secs();
+    if !*shot && *t > 1.8 {
+        let name = std::env::var("QC_SHOT").ok().filter(|s| !s.is_empty() && s != "1").unwrap_or_else(|| "shot".into());
+        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(format!("{name}.png")));
+        *shot = true;
+    }
+    if *t > 3.0 {
+        std::process::exit(0);
+    }
+}
+
+/// QC_EXIT_RUSH driver: after a short pause on each level, snap the player onto
+/// the exit so the campaign advances; log the level + carried loadout each time
+/// the level changes so weapon carry-over can be verified.
+#[allow(clippy::type_complexity)]
+fn exit_rush(
+    time: Res<Time>,
+    plan: Res<level::SpawnPlan>,
+    run: Res<RunState>,
+    mut q: Query<(&mut Transform, &weapons::Inventory, &Health), With<player::Player>>,
+    mut t: Local<f32>,
+    mut last: Local<Option<usize>>,
+) {
+    let (name, _) = levels::LEVEL_META[run.level.min(NUM_LEVELS - 1)];
+    if *last != Some(run.level) {
+        *last = Some(run.level);
+        *t = 0.0;
+        if let Ok((_, inv, hp)) = q.single() {
+            let owned = inv.owned.iter().filter(|o| **o).count();
+            info!(
+                "EXITRUSH level {} \"{}\": weapons_owned={} ammo={:?} hp={:.0} carry={}",
+                run.level + 1, name, owned, inv.ammo, hp.current, run.carry_inventory
+            );
+        }
+    }
+    *t += time.delta_secs();
+    if *t > 0.6 {
+        if let (Some(exit), Ok((mut tf, _, _))) = (plan.exit, q.single_mut()) {
+            tf.translation = exit;
+        }
+    }
 }
 
 fn autotest_drive(

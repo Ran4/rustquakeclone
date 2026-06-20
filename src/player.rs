@@ -4,13 +4,12 @@ use bevy::prelude::*;
 use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
-use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::post_process::bloom::Bloom;
 use bevy::render::view::Msaa;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::common::{tune::*, *};
-use crate::level::PlayerStart;
+use crate::level::{apply_fog, PlayerStart};
 use crate::physics::move_and_slide;
 
 const SENS: f32 = 0.0022;
@@ -52,8 +51,9 @@ pub struct PlayerCamera;
 
 /// Spawn the player root (carrying movement state) with a child first-person
 /// camera that holds all the post-processing. Called on entering Playing.
-pub fn spawn_player(mut commands: Commands, start: Res<PlayerStart>) {
+pub fn spawn_player(mut commands: Commands, start: Res<PlayerStart>, style: Res<LevelStyle>) {
     let fov = 80f32.to_radians();
+    let fog = apply_fog(&style);
     commands
         .spawn((
             Player { yaw: start.yaw, ..default() },
@@ -76,11 +76,7 @@ pub fn spawn_player(mut commands: Commands, start: Res<PlayerStart>) {
                 Msaa::Sample4,
                 Tonemapping::AcesFitted,
                 Bloom::NATURAL,
-                DistanceFog {
-                    color: rgb(0.12, 0.11, 0.15),
-                    falloff: FogFalloff::Linear { start: 16.0, end: 62.0 },
-                    ..default()
-                },
+                fog,
                 Transform::from_xyz(0.0, EYE_OFFSET, 0.0),
                 PlayerCamera,
             ));

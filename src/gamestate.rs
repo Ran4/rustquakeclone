@@ -9,6 +9,7 @@ use crate::common::{tune::PLAYER_HALF, *};
 use crate::level::{LavaVolumes, SpawnPlan};
 use crate::physics::Aabb;
 use crate::player::Player;
+use crate::weapons::Inventory;
 
 pub struct GameStatePlugin;
 impl Plugin for GameStatePlugin {
@@ -19,11 +20,26 @@ impl Plugin for GameStatePlugin {
                 .run_if(in_state(GameState::Playing)),
         )
         .add_systems(Update, restart_system)
+        // One-frame bounce: tear down the old level, then rebuild the next one.
+        .add_systems(OnEnter(GameState::Loading), enter_loading)
         .add_systems(OnEnter(GameState::Dead), (release_cursor, spawn_dead_ui))
         .add_systems(OnExit(GameState::Dead), despawn_overlay)
         .add_systems(OnEnter(GameState::Victory), (release_cursor, victory_jingle, spawn_victory_ui))
         .add_systems(OnExit(GameState::Victory), despawn_overlay);
     }
+}
+
+/// Loading is a transient state: despawn the finished level, then re-enter
+/// Playing so the OnEnter(Playing) chain builds the next level.
+fn enter_loading(
+    mut commands: Commands,
+    q_level: Query<Entity, With<LevelEntity>>,
+    mut next: ResMut<NextState<GameState>>,
+) {
+    for e in &q_level {
+        commands.entity(e).despawn();
+    }
+    next.set(GameState::Playing);
 }
 
 fn objective(mut mission: ResMut<Mission>) {
@@ -77,6 +93,7 @@ fn door_system(
 fn lava_damage(
     time: Res<Time>,
     lava: Res<LavaVolumes>,
+    style: Res<LevelStyle>,
     q_player: Query<(Entity, &Transform), With<Player>>,
     mut dmg: MessageWriter<DamageEvent>,
     mut flash: MessageWriter<ScreenFlash>,
@@ -87,36 +104,63 @@ fn lava_damage(
     let pbox = Aabb::from_center_half(ptf.translation, Vec3::from_array(PLAYER_HALF));
     let burning = lava.volumes.iter().any(|v| v.overlaps(&pbox));
     if burning {
-        // continuous orange singe + periodic damage ticks
-        flash.write(ScreenFlash { color: rgb(0.9, 0.35, 0.05), strength: 0.3 });
+        // continuous hazard-tinted singe + periodic damage ticks
+        flash.write(ScreenFlash { color: style.hazard_flash, strength: 0.3 });
         *acc += dt;
         if *acc >= 0.3 {
             *acc = 0.0;
-            dmg.write(DamageEvent { target: pe, amount: 12.0, source: None, knockback: Vec3::Y * 3.5 });
+            dmg.write(DamageEvent { target: pe, amount: style.hazard_dot, source: None, knockback: Vec3::Y * 3.5 });
         }
     } else {
         *acc = 0.0;
     }
 }
 
-/// Pulse the shared lava material's emissive so it looks molten/alive.
-fn animate_lava(time: Res<Time>, gfx: Res<GfxAssets>, mut materials: ResMut<Assets<StandardMaterial>>) {
+/// Pulse the active hazard material's emissive so it looks molten/alive.
+fn animate_lava(
+    time: Res<Time>,
+    gfx: Res<GfxAssets>,
+    style: Res<LevelStyle>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
     if let Some(mut m) = materials.get_mut(&gfx.lava_mat) {
+        let base = style.hazard_emissive;
         let p = 0.7 + 0.45 * (time.elapsed_secs() * 2.3).sin();
-        m.emissive = LinearRgba::rgb(5.0 * p, 1.2 * p, 0.1 * p);
+        m.emissive = LinearRgba::rgb(base.red * p, base.green * p, base.blue * p);
     }
 }
 
+/// Reaching the exit slipgate: advance to the next level carrying the player's
+/// loadout, or — if this was the last level — win the campaign.
 fn exit_system(
     plan: Res<SpawnPlan>,
-    q_player: Query<&Transform, With<Player>>,
+    mut run: ResMut<RunState>,
+    q_player: Query<(&Transform, &Health, &Armor, &Inventory), With<Player>>,
     mut next: ResMut<NextState<GameState>>,
+    mut sfx: MessageWriter<Sfx>,
 ) {
-    if let (Some(exit), Ok(ptf)) = (plan.exit, q_player.single()) {
-        if ptf.translation.distance(exit) < 3.0 {
-            next.set(GameState::Victory);
-        }
+    let Some(exit) = plan.exit else { return };
+    let Ok((tf, hp, armor, inv)) = q_player.single() else { return };
+    if tf.translation.distance(exit) >= 3.0 {
+        return;
     }
+    if run.level + 1 >= NUM_LEVELS {
+        next.set(GameState::Victory); // finished the final dimension — total win
+        return;
+    }
+    // Snapshot the loadout and bounce through Loading to build the next level.
+    run.carry = Carry {
+        owned: inv.owned,
+        ammo: inv.ammo,
+        current: inv.current.index(),
+        health: hp.current.max(1.0),
+        armor_points: armor.points,
+        armor_absorb: armor.absorb,
+    };
+    run.carry_inventory = true;
+    run.level += 1;
+    sfx.write(Sfx::global(Sound::Victory));
+    next.set(GameState::Loading);
 }
 
 fn restart_system(
@@ -124,10 +168,13 @@ fn restart_system(
     state: Res<State<GameState>>,
     mut next: ResMut<NextState<GameState>>,
     mut commands: Commands,
+    mut run: ResMut<RunState>,
     q_level: Query<Entity, With<LevelEntity>>,
 ) {
     let over = matches!(state.get(), GameState::Dead | GameState::Victory);
     if over && keys.just_pressed(KeyCode::KeyR) {
+        // A full restart is a fresh run: random level, default loadout.
+        run.carry_inventory = false;
         for e in &q_level {
             commands.entity(e).despawn();
         }
@@ -174,12 +221,11 @@ fn spawn_dead_ui(mut commands: Commands) {
     });
 }
 
-fn spawn_victory_ui(mut commands: Commands, mission: Res<Mission>) {
-    let kills = mission.kills;
-    let total = mission.total_enemies;
+fn spawn_victory_ui(mut commands: Commands) {
     commands.spawn(overlay_root()).with_children(|p| {
-        p.spawn((Text::new("YOU ESCAPED!"), TextFont { font_size: FontSize::Px(80.0), ..default() }, TextColor(rgb(0.9, 0.8, 0.3))));
-        p.spawn((Text::new(format!("Slain: {kills} / {total} fiends")), TextFont { font_size: FontSize::Px(30.0), ..default() }, TextColor(rgb(0.9, 0.9, 0.9))));
+        p.spawn((Text::new("CONGRATULATIONS!"), TextFont { font_size: FontSize::Px(82.0), ..default() }, TextColor(rgb(1.0, 0.85, 0.3))));
+        p.spawn((Text::new("You have conquered all seven dimensions."), TextFont { font_size: FontSize::Px(30.0), ..default() }, TextColor(rgb(0.95, 0.95, 0.95))));
+        p.spawn((Text::new("YOU WIN"), TextFont { font_size: FontSize::Px(40.0), ..default() }, TextColor(rgb(0.6, 1.0, 0.6))));
         p.spawn((Text::new("Press R to play again"), TextFont { font_size: FontSize::Px(26.0), ..default() }, TextColor(rgb(0.8, 0.8, 0.8))));
     });
 }

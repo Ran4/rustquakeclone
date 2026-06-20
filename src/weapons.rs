@@ -168,11 +168,22 @@ pub fn setup_player_weapons(
     mut commands: Commands,
     vis: Res<WeaponVis>,
     gfx: Res<GfxAssets>,
+    run: Res<RunState>,
     q_player: Query<Entity, With<Player>>,
     q_cam: Query<Entity, With<PlayerCamera>>,
 ) {
     if let Ok(pe) = q_player.single() {
-        commands.entity(pe).insert(Inventory::default());
+        if run.carry_inventory {
+            // Advancing between levels: keep weapons, ammo, health and armor.
+            let c = &run.carry;
+            commands.entity(pe).insert((
+                Inventory { owned: c.owned, ammo: c.ammo, current: WeaponKind::ALL[c.current.min(6)], cooldown: 0.0 },
+                Health { current: c.health.max(1.0), max: 100.0, dead: false },
+                Armor { points: c.armor_points, absorb: c.armor_absorb },
+            ));
+        } else {
+            commands.entity(pe).insert(Inventory::default());
+        }
     }
     if let Ok(ce) = q_cam.single() {
         commands.entity(ce).with_children(|p| {

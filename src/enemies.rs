@@ -46,6 +46,7 @@ fn key_ambush(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     tex: Res<MonsterTextures>,
+    plan: Res<SpawnPlan>,
     mut sprung: Local<bool>,
     mut q: Query<&mut Enemy>,
     mut sfx: MessageWriter<Sfx>,
@@ -67,18 +68,15 @@ fn key_ambush(
     for mut en in &mut q {
         en.awake = true;
     }
-    // Ambush wave near the vault exit corridor.
-    let wave = [
-        (MonsterKind::Knight, Vec3::new(47.0, 1.0, 1.5)),
-        (MonsterKind::Knight, Vec3::new(47.0, 1.0, 2.5)),
-        (MonsterKind::Ogre, Vec3::new(50.0, 1.0, 6.0)),
-    ];
-    for (kind, pos) in wave {
-        spawn_monster(&mut commands, &mut meshes, &mut materials, &tex, kind, pos);
+    // Ambush wave from this level's plan (placed near the key/exit).
+    for spawn in &plan.ambush {
+        spawn_monster(&mut commands, &mut meshes, &mut materials, &tex, spawn.kind, spawn.pos);
     }
-    mission.total_enemies += wave.len() as u32;
-    sfx.write(Sfx::global(Sound::Door));
-    notify.write(Notify::new("The vault erupts — the dungeon awakens!"));
+    if !plan.ambush.is_empty() {
+        mission.total_enemies += plan.ambush.len() as u32;
+        sfx.write(Sfx::global(Sound::Door));
+        notify.write(Notify::new("The way erupts — the dimension awakens!"));
+    }
 }
 
 /// Pop every body-part's emissive when the monster takes a hit (drives `Enemy.flash`).

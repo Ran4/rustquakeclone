@@ -1,9 +1,10 @@
-# QUAKECLONE — *Dimension of the Doomed*
+# QUAKECLONE — *Seven Dimensions*
 
-A single-mission, Quake-flavoured first-person shooter written from scratch in **Rust + Bevy 0.19**.
-WASD + mouse, Quake-style movement physics, seven weapons, six monster types, hand-built brush map,
-a key-locked door, lava, gibs, explosions and a procedurally-synthesised sound set — it boots
-straight into the mission and plays through in a few minutes.
+A seven-level, Quake-flavoured first-person shooter written from scratch in **Rust + Bevy 0.19**.
+WASD + mouse, Quake-style movement physics, seven weapons, six monster types, seven hand-built brush
+maps each with its own theme, key-locked doors, environmental hazards, gibs, explosions and a
+procedurally-synthesised sound set — it boots straight into the campaign and each level plays through
+in a few minutes.
 
 ```
 cargo run --release
@@ -44,12 +45,29 @@ if it's missing or malformed the defaults above apply.
 | Restart (on death / victory) | **R** |
 | Release cursor    | **Esc** |
 
-## The mission
+## The campaign
 
-Punch out of the slipgate and fight through the techbase-dungeon: the Hall of the Grunts, a
-lava-split corridor, the Ogre ledges, the great Atrium and the Death Knight's vault. Grab the
-**Silver Key**, open the locked door, reach the **exit slipgate** — and try to survive.
+Seven self-contained dimensions, each a hand-built brush map with its own theme, textures, fog,
+lighting and hazard. Every level is the same Quake loop — **grab the Silver Key → open the locked
+door → reach the exit slipgate** — but the world around it changes completely:
 
+1. **Dimension of the Doomed** — the original dark techbase-dungeon, lava and a Death Knight vault.
+2. **Frostspire Keep** — a winter ice fortress; cross a cracked frozen lake on ice-block stepping
+   stones, climb to the keep.
+3. **The Brass Leviathan** — a vertical steampunk clockwork foundry; ascending catwalks over a
+   molten-metal channel, giant gears, a brass bulkhead.
+4. **Tomb of the Sunken King** — an Egyptian desert tomb descending underground; obelisks, gold
+   sarcophagi, cursed quicksand pits, a pharaoh's vault.
+5. **The Verdant Rot** — an alien bio-hive / toxic lab; organic tunnels, toxic-sludge canals,
+   pulsating egg chambers, a Queen's nest.
+6. **The Salt Wraith** — a sci-fi sky-pirate galleon among the clouds; open decks, plank bridges
+   over a plasma-engine void, masts and energy sails, a captain's cabin vault.
+7. **Sanctum of the Void** — the cosmic finale; floating obsidian islands and glowing crystal
+   bridges over a lethal void rift, a Death Knight boss guarding the key.
+
+- **A fresh run starts on a random level.** Finish a level and you carry your weapons, ammo, health
+  and armor straight into the next one; finish the last and the campaign is won.
+- A **"Level N: Name"** banner announces each level for a few seconds as it begins.
 - **Objective HUD** tracks *Find the Silver Key → Reach the Exit* plus a live kill count.
 
 ## Weapons
@@ -128,14 +146,27 @@ to introduce a new texture; delete a PNG to regenerate it.
 | `monster_model.rs` | Procedural skeletal monster rigs, textures, bone animation + death topple |
 | `gallery.rs` | `QC_GALLERY=1` debug mode: render each monster solo and screenshot it |
 | `pickups.rs` | Health, armor, ammo, weapons, key |
-| `level.rs` | The brush-built map + spawn plan |
-| `gamestate.rs` | Objective, door, lava, exit, death/victory, restart |
-| `hud.rs` | Crosshair, status, objective, flash, notifications |
+| `level.rs` | Themed material palettes, the `Build` level-authoring API, level registry + dispatch |
+| `levels/` | One module per level (`level1`..`level7`) — each a `build(&mut Build)` map |
+| `levelshot.rs` | `QC_LEVELSHOT=1` debug mode: build each level and screenshot its entry view |
+| `gamestate.rs` | Objective, doors, hazards, exit→next-level / win, death/victory, restart |
+| `hud.rs` | Crosshair, status, objective, flash, notifications, level banner |
 | `effects.rs` | Particles, explosions, gibs, screen shake, view bob |
 | `audio.rs` / `audio_gen.rs` | Playback + procedural WAV synthesis |
+
+Each level is authored against the small `Build` API in `level.rs` (`room`, `corridor_z/x`,
+`stairs`, `door`, `hazard`, `monster`, `item`, `light`, …) and registered in `levels/mod.rs`. A
+level just lays brushes and fills the spawn plan; the active **theme** supplies its textures, fog,
+ambient light and hazard styling.
 
 Run `QC_AUTOTEST=1 cargo run` to launch a self-driving smoke test (the player walks forward and
 fires while logging position/health) — handy for headless validation.
 
 Run `QC_GALLERY=1 cargo run` to spawn each monster in turn, lit and centered, and save a close-up
 `gallery_<n>_<kind>.png` of every model — handy for eyeballing the rigs and textures.
+
+Run `QC_LEVELSHOT=1 cargo run` to build each level in turn and save `levelshot_<n>_<name>.png` from
+the player's entry vantage — handy for eyeballing every level's geometry, textures and lighting.
+`QC_LEVEL=<n> cargo run` forces the campaign to start on a specific level (0-indexed), and
+`QC_EXIT_RUSH=1 cargo run` teleports the player onto each exit to fast-forward through the campaign
+(validates level progression + weapon carry-over).

@@ -32,9 +32,16 @@ pub mod tune {
 pub enum GameState {
     #[default]
     Playing,
+    /// One-frame bounce state used to tear down the old level and rebuild the
+    /// next one (Playing → Loading → Playing) when advancing between levels.
+    Loading,
     Dead,
     Victory,
 }
+
+/// How many levels the campaign has. A fresh run starts at a random one and
+/// then advances level-by-level to the last; finishing the last one wins.
+pub const NUM_LEVELS: usize = 7;
 
 /// Marker for entities that belong to the active mission and should be cleared
 /// when the level is rebuilt on restart.
@@ -272,6 +279,71 @@ pub struct Mission {
     pub kills: u32,
     pub total_enemies: u32,
     pub objective: String,
+}
+
+// ----------------------------------------------------------------------------
+// Campaign / run progression
+// ----------------------------------------------------------------------------
+/// A snapshot of the player's inventory carried from one level into the next
+/// (weapons keep, ammo keeps, health/armor keep). Stored as primitives so this
+/// lives in `common` without depending on `weapons`.
+#[derive(Default, Clone)]
+pub struct Carry {
+    pub owned: [bool; 7],
+    pub ammo: [i32; 4],
+    pub current: usize, // index into WeaponKind::ALL
+    pub health: f32,
+    pub armor_points: f32,
+    pub armor_absorb: f32,
+}
+
+/// Drives which level is built and whether to carry the player's loadout into
+/// it. A fresh start/restart randomizes `level` and clears `carry_inventory`;
+/// finishing a level increments `level` and sets `carry_inventory`.
+#[derive(Resource)]
+pub struct RunState {
+    pub level: usize,
+    pub carry_inventory: bool,
+    pub carry: Carry,
+}
+impl Default for RunState {
+    fn default() -> Self {
+        Self { level: 0, carry_inventory: false, carry: Carry::default() }
+    }
+}
+
+/// Per-level visual/hazard styling consumed by systems outside `level.rs`
+/// (player fog, lava/hazard pulse + damage). Set by `setup_level`.
+#[derive(Resource)]
+pub struct LevelStyle {
+    pub fog_color: Color,
+    pub fog_start: f32,
+    pub fog_end: f32,
+    /// Base emissive of the hazard material (pulsed each frame).
+    pub hazard_emissive: LinearRgba,
+    /// Damage dealt per hazard tick (every 0.3s) while standing in it.
+    pub hazard_dot: f32,
+    /// Screen-tint color while burning/freezing/etc. in the hazard.
+    pub hazard_flash: Color,
+}
+impl Default for LevelStyle {
+    fn default() -> Self {
+        Self {
+            fog_color: rgb(0.12, 0.11, 0.15),
+            fog_start: 16.0,
+            fog_end: 62.0,
+            hazard_emissive: LinearRgba::rgb(5.0, 1.2, 0.1),
+            hazard_dot: 12.0,
+            hazard_flash: rgb(0.9, 0.35, 0.05),
+        }
+    }
+}
+
+/// The "Level N: Name" banner shown for a few seconds when a level starts.
+#[derive(Resource, Default)]
+pub struct LevelIntro {
+    pub text: String,
+    pub timer: f32,
 }
 
 // ----------------------------------------------------------------------------

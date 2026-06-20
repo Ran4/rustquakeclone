@@ -19,7 +19,7 @@ impl Plugin for HudPlugin {
             .add_systems(OnEnter(GameState::Playing), spawn_hud)
             .add_systems(
                 Update,
-                (update_hud, update_objective, update_flash, update_notify, update_hint, update_fps)
+                (update_hud, update_objective, update_flash, update_notify, update_hint, update_fps, update_level_banner)
                     .run_if(in_state(GameState::Playing)),
             );
     }
@@ -45,6 +45,8 @@ struct NotifyText;
 struct HintText;
 #[derive(Component)]
 struct FpsText;
+#[derive(Component)]
+struct LevelBannerText;
 
 /// Exponentially-smoothed frames-per-second, updated from the real-time clock.
 #[derive(Resource, Default)]
@@ -180,6 +182,27 @@ fn spawn_hud(mut commands: Commands, existing: Query<Entity, With<HudRoot>>) {
         HudRoot,
     ));
 
+    // Level intro banner (big, fades out a few seconds after a level starts).
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Percent(30.0),
+            left: Val::Percent(50.0),
+            margin: UiRect { left: Val::Px(-380.0), ..default() },
+            width: Val::Px(760.0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        Text::new(""),
+        TextFont { font_size: FontSize::Px(54.0), ..default() },
+        TextColor(Color::srgba(1.0, 0.85, 0.35, 0.0)),
+        TextLayout { justify: Justify::Center, ..default() },
+        GlobalZIndex(12),
+        LevelBannerText,
+        LevelEntity,
+        HudRoot,
+    ));
+
     // Center hint (shown when the cursor isn't captured).
     commands.spawn((
         Node { position_type: PositionType::Absolute, top: Val::Percent(62.0), left: Val::Percent(50.0), margin: UiRect { left: Val::Px(-260.0), ..default() }, width: Val::Px(520.0), justify_content: JustifyContent::Center, ..default() },
@@ -292,6 +315,32 @@ fn update_fps(
     if let Ok(mut t) = q.single_mut() {
         t.0 = format!("{:.0} fps", meter.0);
     }
+}
+
+/// Fade the "Level N: Name" banner in for ~0.4s, hold, then fade out.
+fn update_level_banner(
+    time: Res<Time>,
+    mut intro: ResMut<LevelIntro>,
+    mut q: Query<(&mut Text, &mut TextColor), With<LevelBannerText>>,
+) {
+    const FULL: f32 = 4.5;
+    if intro.timer > 0.0 {
+        intro.timer = (intro.timer - time.delta_secs()).max(0.0);
+    }
+    let Ok((mut t, mut col)) = q.single_mut() else { return };
+    if t.0 != intro.text {
+        t.0 = intro.text.clone();
+    }
+    let a = if intro.timer <= 0.0 {
+        0.0
+    } else if intro.timer > FULL - 0.4 {
+        (FULL - intro.timer) / 0.4
+    } else if intro.timer > 1.0 {
+        1.0
+    } else {
+        intro.timer
+    };
+    col.0 = Color::srgba(1.0, 0.85, 0.35, a.clamp(0.0, 1.0));
 }
 
 fn update_hint(
