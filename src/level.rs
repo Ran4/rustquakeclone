@@ -58,6 +58,7 @@ pub fn setup_level(
     mut intro: ResMut<LevelIntro>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
+    start_level: Res<StartLevelConfig>,
     asset_server: Res<AssetServer>,
 ) {
     // Reset mission state for a fresh level.
@@ -66,14 +67,15 @@ pub fn setup_level(
     mission.total_enemies = 0;
     mission.objective = "Find the Silver Key".into();
 
-    // A fresh run (launch, death-restart, post-win restart) starts at a random
-    // level. Advancing between levels keeps `run.level` as already incremented.
-    // `QC_LEVEL=n` forces the starting level (debug only).
+    // A fresh run (launch, death-restart, post-win restart) picks its starting
+    // level; advancing between levels keeps `run.level` as already incremented.
+    // Priority: `QC_LEVEL=n` (debug) → config.ron `start_level` → random.
     if !run.carry_inventory {
         run.level = std::env::var("QC_LEVEL")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .map(|n| n.min(NUM_LEVELS - 1))
+            .or(start_level.0)
             .unwrap_or_else(|| pick_random_level(run.level));
     }
     let idx = run.level.min(NUM_LEVELS - 1);
@@ -772,11 +774,14 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
         self.deco(Vec3::new(x0, top - 0.2, z0), Vec3::new(x1, top, z1), haz.clone());
         // Solid catch floor ~1m down (hidden under real floors where one exists).
         self.solid(Vec3::new(x0, top - 1.4, z0), Vec3::new(x1, top - 1.0, z1), haz);
-        // Damage volume from the catch floor up to just above the surface, so a
-        // body resting on the catch floor is fully inside it and takes ticks.
+        // Damage volume from the catch floor up to a little above the surface.
+        // The upper lip is only +0.2: anything wading at/just below the surface
+        // burns, but a low stepping platform standing clear of the surface does
+        // NOT (level-5's catwalks sit 0.3 above the sludge; level-2's ice blocks
+        // 0.55+). Keep this below ~0.3 or low platforms over a hazard will singe.
         self.lava.volumes.push(Aabb::from_corners(
             Vec3::new(x0, top - 1.2, z0),
-            Vec3::new(x1, top + 0.5, z1),
+            Vec3::new(x1, top + 0.2, z1),
         ));
     }
 

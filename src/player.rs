@@ -123,6 +123,16 @@ fn cursor_grab(
     }
 }
 
+/// Capture the mouse automatically when a level begins (startup and every
+/// restart/level-advance into Playing), so the player can aim right away
+/// instead of having to click first.
+pub fn grab_cursor(mut windows: Query<&mut CursorOptions, With<PrimaryWindow>>) {
+    if let Ok(mut c) = windows.single_mut() {
+        c.grab_mode = CursorGrabMode::Locked;
+        c.visible = false;
+    }
+}
+
 fn player_move(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,

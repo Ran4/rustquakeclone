@@ -27,6 +27,7 @@ startup (omit any field to keep its default):
     width: 1280,        // window size, used only when fullscreen is false
     height: 720,
     vsync: true,        // false → uncap the frame rate (watch the fps meter, top-left)
+    start_level: "random",  // 1–7 to always start on that level, "random" each run (default)
 )
 ```
 

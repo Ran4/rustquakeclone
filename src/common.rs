@@ -312,6 +312,12 @@ impl Default for RunState {
     }
 }
 
+/// The configured fresh-run starting level, read from `config.ron` at startup.
+/// `None` → pick a random level each run (the default); `Some(i)` → always start
+/// on the fixed 0-based level index `i`. The `QC_LEVEL` env var overrides it.
+#[derive(Resource, Clone, Copy, Default)]
+pub struct StartLevelConfig(pub Option<usize>);
+
 /// Per-level visual/hazard styling consumed by systems outside `level.rs`
 /// (player fog, lava/hazard pulse + damage). Set by `setup_level`.
 #[derive(Resource)]

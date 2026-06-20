@@ -93,6 +93,11 @@ fn main() {
             affects_lightmapped_meshes: true,
         })
         .init_state::<GameState>()
+        // configured fresh-run starting level (config.ron `start_level`)
+        .insert_resource(StartLevelConfig(match cfg.start_level {
+            config::StartLevel::Random => None,
+            config::StartLevel::Fixed(n) => Some(n.saturating_sub(1).min(NUM_LEVELS - 1)),
+        }))
         // shared resources
         .init_resource::<WorldColliders>()
         .init_resource::<GfxAssets>()
@@ -143,6 +148,7 @@ fn main() {
                 weapons::create_weapon_vis,
                 level::setup_level,
                 player::spawn_player,
+                player::grab_cursor,
                 weapons::setup_player_weapons,
                 enemies::spawn_monsters,
                 pickups::spawn_items,

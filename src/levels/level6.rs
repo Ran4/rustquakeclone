@@ -21,7 +21,9 @@ use crate::level::Wall;
 
 pub fn build(b: &mut Build) {
     // ---- player spawn: aft of the weather deck, facing the bow (-Z) ----
-    b.start.pos = Vec3::new(0.0, 1.0, 10.0);
+    // (z=11.5 keeps the spawn box clear of the aft mast at z[9.0,9.8] — spawning
+    // at z=10 overlapped it and wedged the player on level start.)
+    b.start.pos = Vec3::new(0.0, 1.0, 11.5);
     b.start.yaw = 0.0;
 
     // handy material clones / customs

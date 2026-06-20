@@ -16,11 +16,60 @@ pub struct Config {
     pub height: u32,
     /// Cap the frame rate to the monitor's refresh rate (avoids tearing).
     pub vsync: bool,
+    /// Which level a fresh run begins on: `1`..`7`, or `"random"` (the default).
+    pub start_level: StartLevel,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { fullscreen: true, width: 1280, height: 720, vsync: true }
+        Self { fullscreen: true, width: 1280, height: 720, vsync: true, start_level: StartLevel::Random }
+    }
+}
+
+/// The configured starting level. Accepts a bare integer (`start_level: 3`) or a
+/// string (`start_level: "random"` / `start_level: "3"`) in `config.ron`. The
+/// number is 1-based (level 1..7); it is range-clamped where it's consumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartLevel {
+    Random,
+    Fixed(usize),
+}
+
+impl Default for StartLevel {
+    fn default() -> Self {
+        StartLevel::Random
+    }
+}
+
+impl<'de> Deserialize<'de> for StartLevel {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = StartLevel;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(r#"a level number 1-7 or the string "random""#)
+            }
+            fn visit_u64<E: serde::de::Error>(self, n: u64) -> Result<StartLevel, E> {
+                Ok(StartLevel::Fixed((n as usize).max(1)))
+            }
+            fn visit_i64<E: serde::de::Error>(self, n: i64) -> Result<StartLevel, E> {
+                Ok(StartLevel::Fixed((n.max(1)) as usize))
+            }
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<StartLevel, E> {
+                let t = s.trim();
+                if t.eq_ignore_ascii_case("random") {
+                    Ok(StartLevel::Random)
+                } else if let Ok(n) = t.parse::<usize>() {
+                    Ok(StartLevel::Fixed(n.max(1)))
+                } else {
+                    Err(E::custom(format!(r#"invalid start_level {s:?} (use 1-7 or "random")"#)))
+                }
+            }
+        }
+        d.deserialize_any(V)
     }
 }
 

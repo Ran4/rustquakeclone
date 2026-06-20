@@ -11,4 +11,9 @@
     // Cap the frame rate to your monitor's refresh rate (prevents tearing).
     // Set to false to uncap — handy for reading the fps meter.
     vsync: true,
+
+    // Which level a fresh run starts on: a number 1-7, or "random" (default).
+    // Finishing a level still carries you into the next one regardless.
+    // start_level: "random",
+    start_level: "3",
 )
