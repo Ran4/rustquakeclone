@@ -8,6 +8,10 @@ edition = "2021"
 # generated .wav sound effects decode at runtime.
 bevy = { version = "0.19", features = ["wav"] }
 
+# config.ron parsing. RON is the Bevy/Rust-idiomatic text config format.
+ron = "0.8"
+serde = { version = "1", features = ["derive"] }
+
 # Fast iterative compiles for our own code, optimized dependencies so the
 # game actually runs at a playable framerate in dev builds.
 [profile.dev]

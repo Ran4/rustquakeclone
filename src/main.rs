@@ -8,6 +8,7 @@ mod audio;
 mod audio_gen;
 mod combat;
 mod common;
+mod config;
 mod effects;
 mod enemies;
 mod gallery;
@@ -25,7 +26,7 @@ use bevy::asset::AssetPlugin;
 use bevy::light::GlobalAmbientLight;
 use bevy::prelude::*;
 use bevy::time::Fixed;
-use bevy::window::PresentMode;
+use bevy::window::{MonitorSelection, PresentMode, WindowMode, WindowResolution};
 
 use common::*;
 
@@ -47,6 +48,7 @@ fn assets_dir() -> String {
 fn main() {
     let assets = assets_dir();
     let gallery = std::env::var("QC_GALLERY").is_ok();
+    let cfg = config::Config::load();
     // Synthesize the SFX set into <assets>/sounds/ before the engine starts so
     // the AssetServer (pointed at the same dir) can load them.
     audio_gen::generate(&assets);
@@ -58,7 +60,13 @@ fn main() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "QUAKECLONE — Dimension of the Doomed".into(),
-                        present_mode: PresentMode::AutoVsync,
+                        present_mode: if cfg.vsync { PresentMode::AutoVsync } else { PresentMode::AutoNoVsync },
+                        mode: if cfg.fullscreen {
+                            WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+                        } else {
+                            WindowMode::Windowed
+                        },
+                        resolution: WindowResolution::new(cfg.width, cfg.height),
                         ..default()
                     }),
                     ..default()

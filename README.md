@@ -15,6 +15,23 @@ already optimises dependencies so the game is smooth.)
 > Linux needs the usual Bevy deps (ALSA + a Vulkan/GL driver). The window starts immediately —
 > **click once** to capture the mouse, then play. Press **Esc** to release the mouse.
 
+## Configuration
+
+The game starts **fullscreen** by default. Edit `config.ron` to change that — it's read at
+startup (omit any field to keep its default):
+
+```ron
+(
+    fullscreen: true,   // false → run in a window
+    width: 1280,        // window size, used only when fullscreen is false
+    height: 720,
+    vsync: true,        // false → uncap the frame rate (watch the fps meter, top-left)
+)
+```
+
+`config.ron` is looked for in the working directory, the crate root, then next to the executable;
+if it's missing or malformed the defaults above apply.
+
 ## Controls
 
 | Action            | Key |

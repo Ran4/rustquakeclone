@@ -18,13 +18,17 @@ const SENS: f32 = 0.0022;
 pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
+        // Movement runs in Update (per rendered frame), not FixedUpdate. The
+        // camera is a child of the player root, so stepping the root at a fixed
+        // 60 Hz while rendering at the monitor's (higher) refresh rate made the
+        // view judder. Per-frame movement is smooth and lower-latency — and it's
+        // how Quake itself ran. All the movement math is dt-scaled, so a variable
+        // timestep is fine. Order: grab → look → move so aim is applied first.
         app.add_systems(
             Update,
-            (player_look, cursor_grab).run_if(in_state(GameState::Playing)),
-        )
-        .add_systems(
-            FixedUpdate,
-            player_move.run_if(in_state(GameState::Playing)),
+            (cursor_grab, player_look, player_move)
+                .chain()
+                .run_if(in_state(GameState::Playing)),
         );
     }
 }

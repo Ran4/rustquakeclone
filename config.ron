@@ -1,0 +1,14 @@
+// QUAKECLONE configuration — edit and restart the game.
+// Any field you omit falls back to its default.
+(
+    // Fill the whole screen (borderless fullscreen). Set to false for a window.
+    fullscreen: true,
+
+    // Window size in pixels — used only when `fullscreen` is false.
+    width: 1280,
+    height: 720,
+
+    // Cap the frame rate to your monitor's refresh rate (prevents tearing).
+    // Set to false to uncap — handy for reading the fps meter.
+    vsync: true,
+)

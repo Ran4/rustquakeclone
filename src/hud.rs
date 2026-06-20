@@ -3,6 +3,7 @@
 
 use bevy::prelude::*;
 use bevy::text::FontSize;
+use bevy::time::Real;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::common::*;
@@ -14,10 +15,11 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FlashState>()
             .init_resource::<NotifyState>()
+            .init_resource::<FpsMeter>()
             .add_systems(OnEnter(GameState::Playing), spawn_hud)
             .add_systems(
                 Update,
-                (update_hud, update_objective, update_flash, update_notify, update_hint)
+                (update_hud, update_objective, update_flash, update_notify, update_hint, update_fps)
                     .run_if(in_state(GameState::Playing)),
             );
     }
@@ -41,6 +43,12 @@ struct FlashOverlay;
 struct NotifyText;
 #[derive(Component)]
 struct HintText;
+#[derive(Component)]
+struct FpsText;
+
+/// Exponentially-smoothed frames-per-second, updated from the real-time clock.
+#[derive(Resource, Default)]
+struct FpsMeter(f32);
 
 #[derive(Resource, Default)]
 struct FlashState {
@@ -130,6 +138,18 @@ fn spawn_hud(mut commands: Commands, existing: Query<Entity, With<HudRoot>>) {
         TextColor(rgb(0.85, 0.85, 0.85)),
         GlobalZIndex(11),
         WeaponText,
+        LevelEntity,
+        HudRoot,
+    ));
+
+    // Top-left: FPS meter.
+    commands.spawn((
+        Node { position_type: PositionType::Absolute, left: Val::Px(24.0), top: Val::Px(18.0), ..default() },
+        Text::new("-- fps"),
+        small(),
+        TextColor(rgb(0.5, 1.0, 0.6)),
+        GlobalZIndex(11),
+        FpsText,
         LevelEntity,
         HudRoot,
     ));
@@ -255,6 +275,22 @@ fn update_notify(
             state.timer / 0.4
         };
         col.0 = Color::srgba(1.0, 1.0, 0.85, a.clamp(0.0, 1.0));
+    }
+}
+
+fn update_fps(
+    time: Res<Time<Real>>,
+    mut meter: ResMut<FpsMeter>,
+    mut q: Query<&mut Text, With<FpsText>>,
+) {
+    let dt = time.delta_secs();
+    if dt > 0.0 {
+        let inst = 1.0 / dt;
+        // Exponential moving average so the readout doesn't flicker every frame.
+        meter.0 = if meter.0 <= 0.0 { inst } else { meter.0 * 0.9 + inst * 0.1 };
+    }
+    if let Ok(mut t) = q.single_mut() {
+        t.0 = format!("{:.0} fps", meter.0);
     }
 }
 
