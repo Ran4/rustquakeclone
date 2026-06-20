@@ -1,0 +1,17 @@
+[package]
+name = "quakeclone"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# default features (incl. default_font, vorbis) + wav so our procedurally
+# generated .wav sound effects decode at runtime.
+bevy = { version = "0.19", features = ["wav"] }
+
+# Fast iterative compiles for our own code, optimized dependencies so the
+# game actually runs at a playable framerate in dev builds.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
