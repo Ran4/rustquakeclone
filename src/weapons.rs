@@ -29,15 +29,17 @@ pub enum WeaponKind {
     Grenade,
     Rocket,
     Lightning,
+    Whip,
 }
 impl WeaponKind {
-    pub const ALL: [WeaponKind; 6] = [
+    pub const ALL: [WeaponKind; 7] = [
         WeaponKind::Shotgun,
         WeaponKind::SuperShotgun,
         WeaponKind::Nailgun,
         WeaponKind::Grenade,
         WeaponKind::Rocket,
         WeaponKind::Lightning,
+        WeaponKind::Whip,
     ];
     pub fn index(self) -> usize {
         WeaponKind::ALL.iter().position(|&w| w == self).unwrap()
@@ -50,6 +52,7 @@ impl WeaponKind {
             WeaponKind::Grenade => "Grenade Launcher",
             WeaponKind::Rocket => "Rocket Launcher",
             WeaponKind::Lightning => "Lightning Gun",
+            WeaponKind::Whip => "Whip",
         }
     }
     pub fn ammo(self) -> usize {
@@ -58,7 +61,12 @@ impl WeaponKind {
             WeaponKind::Nailgun => 1,                            // Nails
             WeaponKind::Grenade | WeaponKind::Rocket => 2,       // Rockets
             WeaponKind::Lightning => 3,                          // Cells
+            WeaponKind::Whip => 0,                               // none (cost 0)
         }
+    }
+    /// True for weapons that never consume ammo (the HUD shows ∞ for these).
+    pub fn infinite(self) -> bool {
+        matches!(self, WeaponKind::Whip)
     }
     fn stats(self) -> Stats {
         match self {
@@ -68,6 +76,9 @@ impl WeaponKind {
             WeaponKind::Grenade => Stats { cooldown: 0.7, cost: 1, sound: Sound::GrenadeFire, shake: 0.1, kick: 0.5, mode: Mode::Projectile(ProjKind::Grenade) },
             WeaponKind::Rocket => Stats { cooldown: 0.85, cost: 1, sound: Sound::RocketFire, shake: 0.18, kick: 0.9, mode: Mode::Projectile(ProjKind::Rocket) },
             WeaponKind::Lightning => Stats { cooldown: 0.06, cost: 1, sound: Sound::Lightning, shake: 0.05, kick: 0.12, mode: Mode::Beam { damage: 8.0 } },
+            // Free melee fallback: short reach, no ammo, big knockback that flings
+            // monsters away (cost 0 so the ammo check always passes).
+            WeaponKind::Whip => Stats { cooldown: 0.5, cost: 0, sound: Sound::Whip, shake: 0.1, kick: 0.45, mode: Mode::Melee { damage: 20.0, range: 4.5, knockback: 22.0 } },
         }
     }
 }
@@ -84,20 +95,22 @@ enum Mode {
     Hitscan { pellets: u32, spread: f32, damage: f32 },
     Projectile(ProjKind),
     Beam { damage: f32 },
+    Melee { damage: f32, range: f32, knockback: f32 },
 }
 
 #[derive(Component)]
 pub struct Inventory {
-    pub owned: [bool; 6],
+    pub owned: [bool; 7],
     pub ammo: [i32; 4],
     pub current: WeaponKind,
     pub cooldown: f32,
 }
 impl Default for Inventory {
     fn default() -> Self {
-        let mut owned = [false; 6];
+        let mut owned = [false; 7];
         owned[WeaponKind::Shotgun.index()] = true;
-        Self { owned, ammo: [25, 0, 0, 0], current: WeaponKind::Shotgun, cooldown: 0.0 }
+        owned[WeaponKind::Whip.index()] = true; // melee fallback, always available
+        Self { owned, ammo: [35, 0, 0, 0], current: WeaponKind::Shotgun, cooldown: 0.0 }
     }
 }
 
@@ -135,6 +148,7 @@ pub fn create_weapon_vis(
         mat(rgb(0.25, 0.45, 0.2), LinearRgba::rgb(0.05, 0.2, 0.02)), // grenade
         mat(rgb(0.5, 0.18, 0.12), LinearRgba::rgb(0.3, 0.05, 0.0)),  // rocket
         mat(rgb(0.3, 0.45, 0.7), LinearRgba::rgb(0.2, 0.6, 1.5)),    // lightning
+        mat(rgb(0.30, 0.18, 0.10), LinearRgba::rgb(0.04, 0.01, 0.0)),// whip (coiled leather)
     ];
     let scales = vec![
         Vec3::new(0.14, 0.14, 0.6),
@@ -143,6 +157,7 @@ pub fn create_weapon_vis(
         Vec3::new(0.18, 0.2, 0.5),
         Vec3::new(0.2, 0.2, 0.75),
         Vec3::new(0.16, 0.16, 0.8),
+        Vec3::new(0.12, 0.12, 0.4),
     ];
     commands.insert_resource(WeaponVis { mats, scales });
 }
@@ -180,7 +195,7 @@ fn switch_weapon(
     let Ok(mut inv) = q.single_mut() else { return };
     let keymap = [
         KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3,
-        KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6,
+        KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7,
     ];
     let mut target = None;
     for (i, k) in keymap.iter().enumerate() {
@@ -192,8 +207,9 @@ fn switch_weapon(
     if scroll.delta.y.abs() > 0.1 {
         let dir = if scroll.delta.y > 0.0 { 1i32 } else { -1 };
         let mut idx = inv.current.index() as i32;
-        for _ in 0..6 {
-            idx = (idx + dir).rem_euclid(6);
+        let n = WeaponKind::ALL.len() as i32;
+        for _ in 0..n {
+            idx = (idx + dir).rem_euclid(n);
             if inv.owned[idx as usize] {
                 target = Some(WeaponKind::ALL[idx as usize]);
                 break;
@@ -248,7 +264,11 @@ fn fire_weapon(
     let forward = cam_gt.forward().as_vec3();
     let muzzle = origin + forward * 0.6;
 
-    spawn_muzzle_flash(&mut commands, &gfx, muzzle);
+    // Melee swings have no muzzle flash (it's a whip crack, not a gunshot).
+    let melee = matches!(stats.mode, Mode::Melee { .. });
+    if !melee {
+        spawn_muzzle_flash(&mut commands, &gfx, muzzle);
+    }
     sfx.write(Sfx::global(stats.sound));
     shake.write(ScreenShake { amount: stats.shake });
     kick.amount = (kick.amount + stats.kick).min(1.5);
@@ -286,7 +306,85 @@ fn fire_weapon(
         Mode::Projectile(kind) => {
             spawn_projectile(&mut commands, &gfx, kind, muzzle, forward, true, Some(pe));
         }
+        Mode::Melee { damage, range, knockback } => {
+            let end = melee_strike(&colliders, &targets, origin, forward, range, damage, knockback, pe, &mut dmg, &mut impact);
+            draw_whip(&mut commands, &gfx, muzzle, end);
+        }
     }
+}
+
+/// Short-range whip lash: hit the nearest monster in front (within `range`,
+/// not behind a wall), dealing `damage` and a strong knockback that flings the
+/// monster away from the player and a little upward. Returns the lash endpoint
+/// (the hit point, or the full reach on a miss) for the visual.
+#[allow(clippy::too_many_arguments)]
+fn melee_strike(
+    colliders: &WorldColliders,
+    targets: &Query<(Entity, &GlobalTransform, &Hurtbox, &Faction), With<Health>>,
+    origin: Vec3,
+    dir: Vec3,
+    range: f32,
+    damage: f32,
+    knockback: f32,
+    source: Entity,
+    dmg: &mut MessageWriter<DamageEvent>,
+    impact: &mut MessageWriter<ImpactEvent>,
+) -> Vec3 {
+    let mut best_t = range;
+    let mut hit_enemy: Option<(Entity, Vec3, Vec3)> = None;
+    for (e, gt, hb, fac) in targets.iter() {
+        if *fac != Faction::Monster {
+            continue;
+        }
+        // Pad the hurtbox a touch so a glancing swing still connects.
+        let b = Aabb::from_center_half(gt.translation(), hb.half + Vec3::splat(0.2));
+        if let Some((t, n)) = ray_aabb(origin, dir, best_t, &b) {
+            best_t = t;
+            hit_enemy = Some((e, origin + dir * t, n));
+        }
+    }
+    // A wall between player and target stops the lash short.
+    if let Some((t, _pt, _n)) = raycast_world(origin, dir, best_t, &colliders.solids) {
+        best_t = t;
+        hit_enemy = None;
+    }
+    if let Some((e, pt, n)) = hit_enemy {
+        // Push horizontally away from the player plus an upward lift, so the
+        // monster flies back regardless of the aim pitch.
+        let horiz = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
+        let push = horiz * knockback + Vec3::Y * knockback * 0.36;
+        dmg.write(DamageEvent { target: e, amount: damage, source: Some(source), knockback: push });
+        impact.write(ImpactEvent { pos: pt, normal: n, blood: true });
+    }
+    origin + dir * best_t.min(range)
+}
+
+/// Draw the whip lash as a couple of thin segments that droop slightly, with a
+/// brief lifetime so it reads as a crack of the whip.
+fn draw_whip(commands: &mut Commands, gfx: &GfxAssets, a: Vec3, b: Vec3) {
+    let len = a.distance(b).max(0.05);
+    let dir = (b - a).normalize_or_zero();
+    let right = dir.cross(Vec3::Y).normalize_or_zero();
+    let up = right.cross(dir).normalize_or_zero();
+    let mid = a.lerp(b, 0.5) - up * (len * 0.1);
+    whip_segment(commands, gfx, a, mid, 0.04);
+    whip_segment(commands, gfx, mid, b, 0.03);
+}
+
+fn whip_segment(commands: &mut Commands, gfx: &GfxAssets, a: Vec3, b: Vec3, w: f32) {
+    let mid = (a + b) * 0.5;
+    let len = a.distance(b).max(0.02);
+    let dir = (b - a).normalize_or_zero();
+    let tf = Transform::from_translation(mid)
+        .looking_to(dir, Vec3::Y)
+        .with_scale(Vec3::new(w, w, len));
+    commands.spawn((
+        Mesh3d(gfx.unit_cube.clone()),
+        MeshMaterial3d(gfx.muzzle.clone()),
+        tf,
+        Lifetime(0.07),
+        LevelEntity,
+    ));
 }
 
 fn spread_dir(forward: Vec3, spread: f32, rx: f32, ry: f32) -> Vec3 {

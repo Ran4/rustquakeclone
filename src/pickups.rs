@@ -142,11 +142,11 @@ fn apply_item(
         Nails(n) => return give_ammo(inv, 1, n, cap, sfx, notify, "Nails"),
         Rockets(n) => return give_ammo(inv, 2, n, cap, sfx, notify, "Rockets"),
         Cells(n) => return give_ammo(inv, 3, n, cap, sfx, notify, "Cells"),
-        WeaponSuperShotgun => return give_weapon(inv, WeaponKind::SuperShotgun, 0, 5, sfx, notify),
-        WeaponNailgun => return give_weapon(inv, WeaponKind::Nailgun, 1, 30, sfx, notify),
-        WeaponGrenade => return give_weapon(inv, WeaponKind::Grenade, 2, 5, sfx, notify),
-        WeaponRocket => return give_weapon(inv, WeaponKind::Rocket, 2, 5, sfx, notify),
-        WeaponLightning => return give_weapon(inv, WeaponKind::Lightning, 3, 15, sfx, notify),
+        WeaponSuperShotgun => return give_weapon(inv, WeaponKind::SuperShotgun, 0, 10, sfx, notify),
+        WeaponNailgun => return give_weapon(inv, WeaponKind::Nailgun, 1, 50, sfx, notify),
+        WeaponGrenade => return give_weapon(inv, WeaponKind::Grenade, 2, 10, sfx, notify),
+        WeaponRocket => return give_weapon(inv, WeaponKind::Rocket, 2, 10, sfx, notify),
+        WeaponLightning => return give_weapon(inv, WeaponKind::Lightning, 3, 25, sfx, notify),
         SilverKey => {
             mission.has_key = true;
             sfx.write(Sfx::global(Sound::KeyPickup));

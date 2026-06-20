@@ -163,7 +163,7 @@ fn spawn_hud(mut commands: Commands, existing: Query<Entity, With<HudRoot>>) {
     // Center hint (shown when the cursor isn't captured).
     commands.spawn((
         Node { position_type: PositionType::Absolute, top: Val::Percent(62.0), left: Val::Percent(50.0), margin: UiRect { left: Val::Px(-260.0), ..default() }, width: Val::Px(520.0), justify_content: JustifyContent::Center, ..default() },
-        Text::new("Click to play  •  WASD move  •  Space jump  •  Mouse aim  •  LMB fire  •  1-6 weapons  •  wheel switch"),
+        Text::new("Click to play  •  WASD move  •  Space jump  •  Mouse aim  •  LMB fire  •  1-7 weapons  •  wheel switch"),
         small(),
         TextColor(rgb(0.9, 0.9, 0.7)),
         TextLayout { justify: Justify::Center, ..default() },
@@ -195,8 +195,11 @@ fn update_hud(
         t.0 = format!("Armor {}", armor.points.max(0.0) as i32);
     }
     if let Ok(mut t) = texts.p2().single_mut() {
-        let ammo = inv.ammo[inv.current.ammo()];
-        t.0 = format!("{ammo}");
+        t.0 = if inv.current.infinite() {
+            "\u{221e}".to_string() // ∞ — the whip needs no ammo
+        } else {
+            format!("{}", inv.ammo[inv.current.ammo()])
+        };
     }
     if let Ok(mut t) = texts.p3().single_mut() {
         t.0 = inv.current.name().to_string();

@@ -201,6 +201,7 @@ pub enum Sound {
     Victory,
     Ambient,
     Lightning,
+    Whip,
 }
 impl Sound {
     pub fn file(self) -> &'static str {
@@ -229,15 +230,17 @@ impl Sound {
             Sound::Victory => "sounds/victory.wav",
             Sound::Ambient => "sounds/ambient.wav",
             Sound::Lightning => "sounds/lightning.wav",
+            Sound::Whip => "sounds/whip.wav",
         }
     }
-    pub fn all() -> [Sound; 24] {
+    pub fn all() -> [Sound; 25] {
         use Sound::*;
         [
             Shotgun, SuperShotgun, Nailgun, RocketFire, GrenadeFire, Explosion,
             GrenadeBounce, Impact, PickupHealth, PickupArmor, PickupAmmo,
             PickupWeapon, KeyPickup, Jump, Land, PlayerPain, PlayerDeath,
             EnemySight, EnemyPain, EnemyDeath, Door, Victory, Ambient, Lightning,
+            Whip,
         ]
     }
 }

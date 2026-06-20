@@ -328,6 +328,16 @@ fn lightning() -> Vec<f32> {
     b.finish(0.7)
 }
 
+fn whip() -> Vec<f32> {
+    // A leather crack: a fast descending air-whistle that ends in a sharp snap.
+    let mut b = Buf::secs(0.16);
+    b.noise(0.5, 22.0, 0.5, 0x3c3c); // air whoosh
+    b.sine_sweep(1800.0, 280.0, 0.5, 26.0); // descending whistle
+    b.noise(1.0, 95.0, 0.95, 0x7a7a); // sharp crack transient
+    b.attack(0.002);
+    b.finish(0.8)
+}
+
 fn ambient() -> Vec<f32> {
     // low, slowly-beating drone, loopable (~3s)
     let mut b = Buf::secs(3.0);
@@ -374,6 +384,7 @@ fn table() -> Vec<(&'static str, fn() -> Vec<f32>)> {
         ("victory.wav", victory),
         ("ambient.wav", ambient),
         ("lightning.wav", lightning),
+        ("whip.wav", whip),
     ]
 }
 

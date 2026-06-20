@@ -1,7 +1,7 @@
 # QUAKECLONE — *Dimension of the Doomed*
 
 A single-mission, Quake-flavoured first-person shooter written from scratch in **Rust + Bevy 0.19**.
-WASD + mouse, Quake-style movement physics, six weapons, six monster types, hand-built brush map,
+WASD + mouse, Quake-style movement physics, seven weapons, six monster types, hand-built brush map,
 a key-locked door, lava, gibs, explosions and a procedurally-synthesised sound set — it boots
 straight into the mission and plays through in a few minutes.
 
@@ -23,7 +23,7 @@ already optimises dependencies so the game is smooth.)
 | Jump              | **Space** (hold to bunny-hop) |
 | Look / aim        | **Mouse** |
 | Fire              | **Left Mouse** (hold for automatic weapons) |
-| Select weapon     | **1–6** or **mouse wheel** |
+| Select weapon     | **1–7** or **mouse wheel** |
 | Restart (on death / victory) | **R** |
 | Release cursor    | **Esc** |
 
@@ -43,8 +43,11 @@ lava-split corridor, the Ogre ledges, the great Atrium and the Death Knight's va
 4. **Grenade Launcher** — bouncing, timed grenades with splash
 5. **Rocket Launcher** — direct + splash damage, *rocket-jump capable*
 6. **Lightning Gun** — continuous hitscan beam
+7. **Whip** — short-range melee, *uses no ammo*; flings whipped monsters back with heavy knockback
 
-Ammo types: Shells, Nails, Rockets, Cells. Armor (green/yellow) absorbs a fraction of damage.
+Ammo types: Shells, Nails, Rockets, Cells. The Whip needs none — it's the always-available
+melee fallback (and a handy way to shove a charging Knight off you). Armor (green/yellow) absorbs a
+fraction of damage.
 
 ## Monsters
 

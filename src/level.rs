@@ -424,7 +424,7 @@ pub fn build_level(
     // slipgate decoration behind spawn
     b.deco(Vec3::new(-2.0, 0.1, 5.2), Vec3::new(2.0, 4.0, 5.6), mats.slipgate.clone());
     plan.items.push(ItemSpawn { kind: ItemKind::ArmorGreen, pos: Vec3::new(-4.0, 0.6, -3.0) });
-    plan.items.push(ItemSpawn { kind: ItemKind::Shells(10), pos: Vec3::new(4.0, 0.6, -3.0) });
+    plan.items.push(ItemSpawn { kind: ItemKind::Shells(15), pos: Vec3::new(4.0, 0.6, -3.0) });
 
     // === Corridor C1: x[-2,2] z[-14,-6], h4 ===
     corridor_z(&mut b, &mats, -2.0, 2.0, -14.0, -6.0, 0.0, 4.0);
@@ -435,9 +435,10 @@ pub fn build_level(
     plan.monsters.push(MonsterSpawn { kind: MonsterKind::Grunt, pos: Vec3::new(-4.0, 1.0, -24.0) });
     plan.monsters.push(MonsterSpawn { kind: MonsterKind::Grunt, pos: Vec3::new(4.0, 1.0, -25.0) });
     plan.monsters.push(MonsterSpawn { kind: MonsterKind::Grunt, pos: Vec3::new(0.0, 1.0, -27.0) });
-    plan.items.push(ItemSpawn { kind: ItemKind::Shells(20), pos: Vec3::new(-6.0, 0.6, -26.0) });
+    plan.items.push(ItemSpawn { kind: ItemKind::Shells(30), pos: Vec3::new(-6.0, 0.6, -26.0) });
     plan.items.push(ItemSpawn { kind: ItemKind::Health(25), pos: Vec3::new(6.0, 0.6, -26.0) });
     plan.items.push(ItemSpawn { kind: ItemKind::WeaponSuperShotgun, pos: Vec3::new(0.0, 0.6, -18.0) });
+    plan.items.push(ItemSpawn { kind: ItemKind::Shells(15), pos: Vec3::new(2.0, 0.6, -18.0) });
 
     // === Corridor C2 with LAVA: x[8,20] z[-25,-21], h5; lava gap in the middle ===
     corridor_x(&mut b, &mats, 8.0, 20.0, -25.0, -21.0, 0.0, 5.0);
@@ -462,9 +463,9 @@ pub fn build_level(
     plan.monsters.push(MonsterSpawn { kind: MonsterKind::Ogre, pos: Vec3::new(35.5, 3.6, -27.0) });
     plan.monsters.push(MonsterSpawn { kind: MonsterKind::Knight, pos: Vec3::new(29.0, 1.0, -20.0) });
     plan.items.push(ItemSpawn { kind: ItemKind::WeaponNailgun, pos: Vec3::new(35.5, 3.6, -27.0) });
-    plan.items.push(ItemSpawn { kind: ItemKind::Nails(50), pos: Vec3::new(22.5, 3.6, -27.0) });
+    plan.items.push(ItemSpawn { kind: ItemKind::Nails(75), pos: Vec3::new(22.5, 3.6, -27.0) });
     plan.items.push(ItemSpawn { kind: ItemKind::WeaponGrenade, pos: Vec3::new(22.5, 3.6, -26.0) });
-    plan.items.push(ItemSpawn { kind: ItemKind::Rockets(10), pos: Vec3::new(24.5, 3.6, -27.0) });
+    plan.items.push(ItemSpawn { kind: ItemKind::Rockets(15), pos: Vec3::new(24.5, 3.6, -27.0) });
     plan.items.push(ItemSpawn { kind: ItemKind::Health(25), pos: Vec3::new(29.0, 0.6, -28.0) });
 
     // === Corridor C3: x[26,30] z[-14,-8], h5 ===
@@ -485,8 +486,10 @@ pub fn build_level(
     plan.monsters.push(MonsterSpawn { kind: MonsterKind::Scrag, pos: Vec3::new(36.0, 6.0, 10.0) });
     plan.monsters.push(MonsterSpawn { kind: MonsterKind::Enforcer, pos: Vec3::new(20.0, 1.0, 12.0) });
     plan.items.push(ItemSpawn { kind: ItemKind::WeaponRocket, pos: Vec3::new(37.0, 4.1, -5.0) });
-    plan.items.push(ItemSpawn { kind: ItemKind::Rockets(10), pos: Vec3::new(37.0, 4.1, -3.0) });
+    plan.items.push(ItemSpawn { kind: ItemKind::Rockets(15), pos: Vec3::new(37.0, 4.1, -3.0) });
     plan.items.push(ItemSpawn { kind: ItemKind::ArmorYellow, pos: Vec3::new(20.0, 0.6, -5.0) });
+    plan.items.push(ItemSpawn { kind: ItemKind::Shells(20), pos: Vec3::new(22.0, 0.6, 8.0) });
+    plan.items.push(ItemSpawn { kind: ItemKind::Nails(30), pos: Vec3::new(20.0, 0.6, 10.0) });
 
     // === Corridor C4 to Key Vault: x[40,46] z[0,4], h5 ===
     corridor_x(&mut b, &mats, 40.0, 46.0, 0.0, 4.0, 0.0, 5.0);
@@ -497,7 +500,7 @@ pub fn build_level(
     plan.monsters.push(MonsterSpawn { kind: MonsterKind::DeathKnight, pos: Vec3::new(54.0, 1.0, 2.0) });
     plan.items.push(ItemSpawn { kind: ItemKind::SilverKey, pos: Vec3::new(52.0, 1.0, 2.0) });
     plan.items.push(ItemSpawn { kind: ItemKind::MegaHealth, pos: Vec3::new(48.0, 0.8, 6.0) });
-    plan.items.push(ItemSpawn { kind: ItemKind::Cells(30), pos: Vec3::new(56.0, 0.8, 6.0) });
+    plan.items.push(ItemSpawn { kind: ItemKind::Cells(50), pos: Vec3::new(56.0, 0.8, 6.0) });
     plan.items.push(ItemSpawn { kind: ItemKind::WeaponLightning, pos: Vec3::new(48.0, 0.8, -2.0) });
 
     // === Locked door on the Atrium south wall (z=14), gap x[27,31] ===
@@ -533,7 +536,8 @@ pub fn build_level(
     plan.monsters.push(MonsterSpawn { kind: MonsterKind::Knight, pos: Vec3::new(34.0, 1.0, 34.0) });
     plan.monsters.push(MonsterSpawn { kind: MonsterKind::Enforcer, pos: Vec3::new(29.0, 1.0, 36.0) });
     plan.items.push(ItemSpawn { kind: ItemKind::Health(25), pos: Vec3::new(22.0, 0.6, 24.0) });
-    plan.items.push(ItemSpawn { kind: ItemKind::Rockets(10), pos: Vec3::new(36.0, 0.6, 24.0) });
+    plan.items.push(ItemSpawn { kind: ItemKind::Rockets(15), pos: Vec3::new(36.0, 0.6, 24.0) });
+    plan.items.push(ItemSpawn { kind: ItemKind::Shells(20), pos: Vec3::new(29.0, 0.6, 24.0) });
 
     // ---- lights ----
     spawn_lights(b.commands);
