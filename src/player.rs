@@ -73,8 +73,8 @@ pub fn spawn_player(mut commands: Commands, start: Res<PlayerStart>) {
                 Tonemapping::AcesFitted,
                 Bloom::NATURAL,
                 DistanceFog {
-                    color: rgb(0.05, 0.04, 0.06),
-                    falloff: FogFalloff::Linear { start: 12.0, end: 55.0 },
+                    color: rgb(0.12, 0.11, 0.15),
+                    falloff: FogFalloff::Linear { start: 16.0, end: 62.0 },
                     ..default()
                 },
                 Transform::from_xyz(0.0, EYE_OFFSET, 0.0),

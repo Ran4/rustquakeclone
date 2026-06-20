@@ -72,7 +72,7 @@ fn main() {
         .insert_resource(Time::<Fixed>::from_hz(60.0))
         .insert_resource(ClearColor(rgb(0.02, 0.02, 0.03)))
         .insert_resource(GlobalAmbientLight {
-            brightness: 90.0,
+            brightness: 200.0,
             color: rgb(0.45, 0.45, 0.6),
             affects_lightmapped_meshes: true,
         })

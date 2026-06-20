@@ -550,7 +550,7 @@ fn spawn_lights(commands: &mut Commands) {
     commands.spawn((
         DirectionalLight {
             color: rgb(0.6, 0.6, 0.75),
-            illuminance: 1500.0,
+            illuminance: 2700.0,
             shadow_maps_enabled: true,
             ..default()
         },

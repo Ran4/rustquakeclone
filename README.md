@@ -52,12 +52,14 @@ Grunt (hitscan soldier) · Enforcer (energy bolts) · Knight (fast melee) · Scr
 Ogre (grenade-lobbing bruiser + chainsaw) · Death Knight (mini-boss). Each has line-of-sight
 perception and an Idle → Chase → Attack AI.
 
-Every monster is a **procedurally-assembled skeletal model**: a hierarchy of parented bone
-entities (pelvis → torso → head/jaw, articulated arms and legs, plus per-kind extras — the
-Ogre's chainsaw, the Scrag's wings and tail, the Knight's and Death Knight's swords). Each body
-part is a primitive mesh (box/capsule/sphere/cone) skinned with a texture, and a procedural
-animator drives the bones every frame — a speed-scaled walk cycle, idle breathing, attack swings,
-a pain flinch and a death topple. No binary mesh assets: the skeleton *is* the entity hierarchy.
+Every monster is a **procedurally-assembled skeletal model** in the angular, low-poly Quake style:
+a hierarchy of parented bone entities (pelvis → torso → head/jaw, articulated arms and legs, plus
+per-kind extras — the Ogre's chainsaw, the Scrag's wings and tail, the Knight's and Death Knight's
+swords). Body parts are **faceted low-poly meshes** — tapered muscular limbs, splayed claws and
+overlapping muscle-mass blobs — that are flat-shaded and vertex-jittered (so they read as hard,
+hand-modeled facets, not smooth balloons) and skinned with a texture. A procedural animator drives
+the bones every frame — a speed-scaled walk cycle, idle breathing, attack swings, a pain flinch and
+a death topple. No binary mesh assets: the skeleton *is* the entity hierarchy.
 
 The skin textures live in `assets/textures/monsters/` and were generated with OpenAI's
 `gpt-image-2` (seamless dark-fantasy albedo maps — rotting flesh, flak armor, demon hide, obsidian
