@@ -1,7 +1,7 @@
 //! Procedural skeletal monster models.
 //!
-//! Each monster is no longer a single capsule: it's a small hierarchy of parented
-//! "bone" entities (pelvis -> torso -> head/jaw, articulated arms & legs, plus
+//! Each monster is a small hierarchy of parented "bone" entities (pelvis -> torso
+//! -> head/jaw, articulated arms & legs, plus
 //! per-kind bits like the Ogre's chainsaw or the Scrag's wings & tail). Every part
 //! is a low-poly mesh — tapered limbs, claws, faceted muscle masses — that is
 //! flat-shaded and vertex-jittered for the angular, hand-modeled Quake look, then

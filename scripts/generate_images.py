@@ -1,0 +1,249 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["openai>=1.0", "pillow"]
+# ///
+"""
+Generate the game's image assets (textures) with OpenAI's `gpt-image-2`.
+
+The pattern: this script is the single registry of every image the game needs.
+Running it scans the manifest below and renders only the ones whose PNG does
+*not* already exist on disk — so it is safe to run repeatedly and cheap to
+re-run after adding a new entry. Delete a PNG (or pass --force) to re-render it.
+
+    uv run scripts/generate_images.py            # render anything missing
+    uv run scripts/generate_images.py --list     # show what exists / is missing
+    uv run scripts/generate_images.py --only wall # only entries matching "wall"
+    uv run scripts/generate_images.py --force     # re-render even if present
+
+The OpenAI key is read from the environment or from the repo-root .env
+(OPENAI_API_KEY=...).
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import io
+import os
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ASSETS = REPO_ROOT / "assets"
+
+# Shared instruction so every world texture comes back tileable and unlit — a
+# flat albedo map, which is what the renderer wants (lighting is done in-engine).
+SEAMLESS = (
+    "Seamless tileable texture, flat even orthographic lighting with no cast "
+    "shadows and no glare, photoreal albedo/diffuse map only, the four edges "
+    "wrap perfectly so the image can be tiled in a grid. "
+)
+
+
+@dataclass
+class Image:
+    """One image the game needs: where it lives + how to draw it."""
+
+    path: str  # relative to assets/
+    prompt: str
+    size: str = "1024x1024"
+    quality: str = "high"
+    # World tiles are downscaled to keep them tileable-crisp and the repo small.
+    resize: int | None = 512
+
+
+# ---------------------------------------------------------------------------
+# The manifest — every image the game loads.
+# ---------------------------------------------------------------------------
+# World/level surface textures (these are the new ones — the walls etc.).
+WORLD: list[Image] = [
+    Image(
+        "textures/world/wall.png",
+        SEAMLESS
+        + "Dark-fantasy Quake-style techbase wall: large rough riveted stone-"
+        "and-metal blocks, grime and rust streaks running down, hard angular "
+        "facets, muted grey-brown palette, gritty and oppressive.",
+    ),
+    Image(
+        "textures/world/floor.png",
+        SEAMLESS
+        + "Worn dungeon floor of cracked grey-brown stone flagstones, dirt and "
+        "soot packed into the grooves, scuffed and uneven, top-down view.",
+    ),
+    Image(
+        "textures/world/ceiling.png",
+        SEAMLESS
+        + "Very dark sooty stone ceiling, rough black-brown rock with faint "
+        "embedded iron supports, deep shadowed grime, nearly black.",
+    ),
+    Image(
+        "textures/world/trim.png",
+        SEAMLESS
+        + "Ornate tarnished brass-and-gold runed trim metal, embossed angular "
+        "occult Quake sigils, scratched gold patina over dark bronze.",
+    ),
+    Image(
+        "textures/world/metal.png",
+        SEAMLESS
+        + "Riveted gunmetal steel floor plate, brushed dark panels with bolts, "
+        "diamond-tread sections, grime and faint rust in the seams.",
+    ),
+    Image(
+        "textures/world/door.png",
+        SEAMLESS
+        + "Heavy iron dungeon door panel: banded studded dark metal with thick "
+        "vertical seams, big rivets and a central reinforcing plate, grimy.",
+    ),
+    Image(
+        "textures/world/lava.png",
+        SEAMLESS
+        + "Molten lava surface, bright glowing orange-yellow cracks splitting a "
+        "dark cooling basalt crust, fierce emissive magma, top-down view.",
+    ),
+]
+
+# Monster skins live here too so the manifest is the *complete* registry. These
+# PNGs already ship in the repo, so a normal run skips them; they are listed so
+# the set is reproducible if one is ever deleted.
+MONSTERS: list[Image] = [
+    Image("textures/monsters/grunt_skin.png",
+          "Seamless dark-fantasy albedo texture: pale grey rotting human soldier "
+          "flesh, veined and bruised, no lighting.", resize=None),
+    Image("textures/monsters/grunt_armor.png",
+          "Seamless dark-fantasy albedo texture: scuffed olive-brown military "
+          "flak armor plating with buckles, no lighting.", resize=None),
+    Image("textures/monsters/enforcer_skin.png",
+          "Seamless dark-fantasy albedo texture: sickly grey-green augmented "
+          "soldier skin with scars, no lighting.", resize=None),
+    Image("textures/monsters/enforcer_armor.png",
+          "Seamless dark-fantasy albedo texture: dark riveted gunmetal enforcer "
+          "armor with glowing energy conduits, no lighting.", resize=None),
+    Image("textures/monsters/knight_steel.png",
+          "Seamless dark-fantasy albedo texture: battered polished steel knight "
+          "plate armor, scratched, no lighting.", resize=None),
+    Image("textures/monsters/knight_mail.png",
+          "Seamless dark-fantasy albedo texture: dark interlocking chainmail "
+          "over black cloth, no lighting.", resize=None),
+    Image("textures/monsters/scrag_flesh.png",
+          "Seamless dark-fantasy albedo texture: pale translucent floating-demon "
+          "flesh, purple veins, clammy, no lighting.", resize=None),
+    Image("textures/monsters/scrag_membrane.png",
+          "Seamless dark-fantasy albedo texture: thin veined bat-like wing "
+          "membrane, purplish-grey, no lighting.", resize=None),
+    Image("textures/monsters/ogre_hide.png",
+          "Seamless dark-fantasy albedo texture: thick warty brown ogre hide, "
+          "leathery and scarred, no lighting.", resize=None),
+    Image("textures/monsters/ogre_apron.png",
+          "Seamless dark-fantasy albedo texture: filthy bloodstained leather "
+          "butcher's apron, no lighting.", resize=None),
+    Image("textures/monsters/dk_armor.png",
+          "Seamless dark-fantasy albedo texture: obsidian black hell-plate armor "
+          "with dull red glowing runes, no lighting.", resize=None),
+    Image("textures/monsters/dk_cloth.png",
+          "Seamless dark-fantasy albedo texture: tattered blood-red demonic cape "
+          "cloth, frayed, no lighting.", resize=None),
+    Image("textures/monsters/bone.png",
+          "Seamless dark-fantasy albedo texture: aged yellow-grey bone, cracked "
+          "and pitted, no lighting.", resize=None),
+    Image("textures/monsters/demon_metal.png",
+          "Seamless dark-fantasy albedo texture: dark demonic blade steel, "
+          "blued metal with etched runes, no lighting.", resize=None),
+]
+
+MANIFEST: list[Image] = WORLD + MONSTERS
+
+
+def load_env_key() -> str | None:
+    """Return OPENAI_API_KEY from the environment or the repo-root .env."""
+    if os.environ.get("OPENAI_API_KEY"):
+        return os.environ["OPENAI_API_KEY"]
+    env = REPO_ROOT / ".env"
+    if env.exists():
+        for line in env.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("OPENAI_API_KEY="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return None
+
+
+def render(client, img: Image) -> bytes:
+    """Call gpt-image-2 and return PNG bytes (optionally downscaled)."""
+    resp = client.images.generate(
+        model="gpt-image-2",
+        prompt=img.prompt,
+        size=img.size,
+        quality=img.quality,
+        n=1,
+    )
+    data = base64.b64decode(resp.data[0].b64_json)
+    if img.resize:
+        from PIL import Image as PILImage
+
+        im = PILImage.open(io.BytesIO(data)).convert("RGB")
+        im = im.resize((img.resize, img.resize), PILImage.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        data = buf.getvalue()
+    return data
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--force", action="store_true", help="re-render even if the PNG exists")
+    ap.add_argument("--only", default=None, help="only entries whose path contains this substring")
+    ap.add_argument("--list", action="store_true", help="list manifest status and exit")
+    ap.add_argument("--dry-run", action="store_true", help="show what would render, but don't call the API")
+    ap.add_argument("--quality", default=None, help="override quality (low/medium/high)")
+    args = ap.parse_args()
+
+    items = [i for i in MANIFEST if not args.only or args.only in i.path]
+
+    if args.list:
+        for i in items:
+            exists = (ASSETS / i.path).exists()
+            print(f"  [{'x' if exists else ' '}] {i.path}")
+        return 0
+
+    todo = [i for i in items if args.force or not (ASSETS / i.path).exists()]
+    skipped = len(items) - len(todo)
+    if skipped:
+        print(f"✓ {skipped} already present (skipping)")
+    if not todo:
+        print("Nothing to render — all images present.")
+        return 0
+
+    print(f"→ {len(todo)} to render:")
+    for i in todo:
+        print(f"    {i.path}")
+    if args.dry_run:
+        return 0
+
+    key = load_env_key()
+    if not key:
+        print("ERROR: OPENAI_API_KEY not set (env or .env).", file=sys.stderr)
+        return 1
+    from openai import OpenAI
+
+    client = OpenAI(api_key=key)
+
+    failures = 0
+    for i in todo:
+        if args.quality:
+            i.quality = args.quality
+        out = ASSETS / i.path
+        out.parent.mkdir(parents=True, exist_ok=True)
+        print(f"… rendering {i.path} ({i.size}, q={i.quality}) …", flush=True)
+        try:
+            out.write_bytes(render(client, i))
+            print(f"  ✓ wrote {out.relative_to(REPO_ROOT)} ({out.stat().st_size // 1024} KB)")
+        except Exception as e:  # keep going; report at the end
+            failures += 1
+            print(f"  ✗ failed: {e}", file=sys.stderr)
+
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

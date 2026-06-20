@@ -5,7 +5,10 @@
 //! brush). It also produces a SpawnPlan describing where enemies, items, the key,
 //! the locked door and the exit go — consumed by the enemy/pickup modules.
 
+use bevy::asset::RenderAssetUsages;
+use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
+use bevy::render::mesh::{Indices, PrimitiveTopology};
 
 use crate::common::*;
 use crate::physics::Aabb;
@@ -31,6 +34,7 @@ pub fn setup_level(
     mut lava: ResMut<LavaVolumes>,
     mut gfx: ResMut<GfxAssets>,
     mut mission: ResMut<Mission>,
+    asset_server: Res<AssetServer>,
 ) {
     // Reset mission state for a fresh run.
     mission.has_key = false;
@@ -47,6 +51,7 @@ pub fn setup_level(
         &mut plan,
         &mut lava,
         &mut gfx,
+        &asset_server,
     );
 }
 
@@ -124,34 +129,57 @@ struct Mats {
     door: Handle<StandardMaterial>,
 }
 
-fn solid_mat(m: &mut Assets<StandardMaterial>, c: Color, rough: f32, metal: f32) -> Handle<StandardMaterial> {
+/// Loader setting that makes a texture wrap (tile) instead of clamping at the
+/// edges — required because brushes carry world-scaled UVs that exceed 0..1.
+fn repeat_sampler(s: &mut ImageLoaderSettings) {
+    s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        address_mode_w: ImageAddressMode::Repeat,
+        ..ImageSamplerDescriptor::linear()
+    });
+}
+
+/// A surface material skinned with a seamless, tiling albedo texture.
+fn tex_mat(
+    m: &mut Assets<StandardMaterial>,
+    assets: &AssetServer,
+    path: &str,
+    rough: f32,
+    metal: f32,
+) -> Handle<StandardMaterial> {
+    let img = assets.load_builder().with_settings(repeat_sampler).load(path.to_string());
     m.add(StandardMaterial {
-        base_color: c,
+        base_color_texture: Some(img),
         perceptual_roughness: rough,
         metallic: metal,
         ..default()
     })
 }
 
-fn make_mats(m: &mut Assets<StandardMaterial>) -> Mats {
+fn make_mats(m: &mut Assets<StandardMaterial>, assets: &AssetServer) -> Mats {
     Mats {
-        floor: solid_mat(m, rgb(0.20, 0.18, 0.16), 0.95, 0.0),
-        wall: solid_mat(m, rgb(0.32, 0.24, 0.17), 0.9, 0.05),
-        trim: solid_mat(m, rgb(0.42, 0.30, 0.16), 0.7, 0.2),
-        ceiling: solid_mat(m, rgb(0.10, 0.09, 0.09), 1.0, 0.0),
-        metal: solid_mat(m, rgb(0.30, 0.31, 0.34), 0.45, 0.7),
-        lava: m.add(StandardMaterial {
-            base_color: rgb(0.9, 0.35, 0.08),
-            emissive: LinearRgba::rgb(5.0, 1.2, 0.1),
-            perceptual_roughness: 0.6,
-            ..default()
-        }),
+        floor: tex_mat(m, assets, "textures/world/floor.png", 0.95, 0.0),
+        wall: tex_mat(m, assets, "textures/world/wall.png", 0.9, 0.05),
+        trim: tex_mat(m, assets, "textures/world/trim.png", 0.6, 0.3),
+        ceiling: tex_mat(m, assets, "textures/world/ceiling.png", 1.0, 0.0),
+        metal: tex_mat(m, assets, "textures/world/metal.png", 0.4, 0.75),
+        lava: {
+            // Textured for the molten-crust detail, but still self-lit so it glows.
+            let img = assets.load_builder().with_settings(repeat_sampler).load("textures/world/lava.png");
+            m.add(StandardMaterial {
+                base_color_texture: Some(img),
+                emissive: LinearRgba::rgb(5.0, 1.2, 0.1),
+                perceptual_roughness: 0.6,
+                ..default()
+            })
+        },
         slipgate: m.add(StandardMaterial {
             base_color: rgb(0.5, 0.2, 0.9),
             emissive: LinearRgba::rgb(1.2, 0.4, 3.0),
             ..default()
         }),
-        door: solid_mat(m, rgb(0.28, 0.22, 0.30), 0.6, 0.3),
+        door: tex_mat(m, assets, "textures/world/door.png", 0.6, 0.4),
     }
 }
 
@@ -160,24 +188,94 @@ fn make_mats(m: &mut Assets<StandardMaterial>) -> Mats {
 // ----------------------------------------------------------------------------
 const WALL_T: f32 = 0.5;
 
+/// World-space size (in meters) that one texture tile covers. Brush faces get
+/// UVs scaled by their world dimensions / this, so the texel density is uniform
+/// across the whole level (the classic Quake world-aligned-texture look) and
+/// adjacent brushes line up.
+const TEXEL: f32 = 2.5;
+
+/// Build a box brush as its own mesh: positions are local (centered on the
+/// brush), but UVs are derived from the *world* coordinates so the texture
+/// tiles consistently and seams between brushes align. Each of the 6 faces maps
+/// the two in-plane world axes to (u, v).
+fn box_mesh(min: Vec3, max: Vec3) -> Mesh {
+    let center = (min + max) * 0.5;
+    let s = 1.0 / TEXEL;
+    let (x0, y0, z0) = (min.x, min.y, min.z);
+    let (x1, y1, z1) = (max.x, max.y, max.z);
+
+    let mut pos: Vec<[f32; 3]> = Vec::with_capacity(24);
+    let mut nor: Vec<[f32; 3]> = Vec::with_capacity(24);
+    let mut uv: Vec<[f32; 2]> = Vec::with_capacity(24);
+    let mut idx: Vec<u32> = Vec::with_capacity(36);
+
+    let mut quad = |p: [Vec3; 4], n: [f32; 3], u: [[f32; 2]; 4]| {
+        let base = pos.len() as u32;
+        for k in 0..4 {
+            let w = p[k] - center;
+            pos.push([w.x, w.y, w.z]);
+            nor.push(n);
+            uv.push(u[k]);
+        }
+        idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    };
+
+    // +X / -X faces: u <- z, v <- y
+    quad(
+        [Vec3::new(x1, y0, z1), Vec3::new(x1, y0, z0), Vec3::new(x1, y1, z0), Vec3::new(x1, y1, z1)],
+        [1.0, 0.0, 0.0],
+        [[z1 * s, y0 * s], [z0 * s, y0 * s], [z0 * s, y1 * s], [z1 * s, y1 * s]],
+    );
+    quad(
+        [Vec3::new(x0, y0, z0), Vec3::new(x0, y0, z1), Vec3::new(x0, y1, z1), Vec3::new(x0, y1, z0)],
+        [-1.0, 0.0, 0.0],
+        [[z0 * s, y0 * s], [z1 * s, y0 * s], [z1 * s, y1 * s], [z0 * s, y1 * s]],
+    );
+    // +Y / -Y faces (top/bottom): u <- x, v <- z
+    quad(
+        [Vec3::new(x0, y1, z1), Vec3::new(x1, y1, z1), Vec3::new(x1, y1, z0), Vec3::new(x0, y1, z0)],
+        [0.0, 1.0, 0.0],
+        [[x0 * s, z1 * s], [x1 * s, z1 * s], [x1 * s, z0 * s], [x0 * s, z0 * s]],
+    );
+    quad(
+        [Vec3::new(x0, y0, z0), Vec3::new(x1, y0, z0), Vec3::new(x1, y0, z1), Vec3::new(x0, y0, z1)],
+        [0.0, -1.0, 0.0],
+        [[x0 * s, z0 * s], [x1 * s, z0 * s], [x1 * s, z1 * s], [x0 * s, z1 * s]],
+    );
+    // +Z / -Z faces: u <- x, v <- y
+    quad(
+        [Vec3::new(x0, y0, z1), Vec3::new(x1, y0, z1), Vec3::new(x1, y1, z1), Vec3::new(x0, y1, z1)],
+        [0.0, 0.0, 1.0],
+        [[x0 * s, y0 * s], [x1 * s, y0 * s], [x1 * s, y1 * s], [x0 * s, y1 * s]],
+    );
+    quad(
+        [Vec3::new(x1, y0, z0), Vec3::new(x0, y0, z0), Vec3::new(x0, y1, z0), Vec3::new(x1, y1, z0)],
+        [0.0, 0.0, -1.0],
+        [[x1 * s, y0 * s], [x0 * s, y0 * s], [x0 * s, y1 * s], [x1 * s, y1 * s]],
+    );
+
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    m.insert_indices(Indices::U32(idx));
+    m
+}
+
 struct Build<'a, 'w, 's> {
     commands: &'a mut Commands<'w, 's>,
-    unit: Handle<Mesh>,
+    meshes: &'a mut Assets<Mesh>,
     colliders: &'a mut Vec<Aabb>,
 }
 
 impl<'a, 'w, 's> Build<'a, 'w, 's> {
     fn visual(&mut self, min: Vec3, max: Vec3, mat: Handle<StandardMaterial>) {
         let center = (min + max) * 0.5;
-        let size = (max - min).max(Vec3::splat(0.01));
+        let mesh = self.meshes.add(box_mesh(min, max));
         self.commands.spawn((
-            Mesh3d(self.unit.clone()),
+            Mesh3d(mesh),
             MeshMaterial3d(mat),
-            Transform {
-                translation: center,
-                scale: size,
-                ..default()
-            },
+            Transform::from_translation(center),
             LevelEntity,
         ));
     }
@@ -277,6 +375,7 @@ pub fn build_level(
     plan: &mut SpawnPlan,
     lava: &mut LavaVolumes,
     gfx: &mut GfxAssets,
+    asset_server: &AssetServer,
 ) {
     let unit = meshes.add(Cuboid::from_size(Vec3::ONE));
     gfx.unit_cube = unit.clone();
@@ -302,7 +401,7 @@ pub fn build_level(
     gfx.nail = unlit(materials, rgb(0.8, 0.8, 0.9), LinearRgba::rgb(1.5, 1.5, 2.0));
     gfx.plasma = unlit(materials, rgb(0.5, 0.7, 1.0), LinearRgba::rgb(1.0, 3.0, 8.0));
 
-    let mats = make_mats(materials);
+    let mats = make_mats(materials, asset_server);
     gfx.lava_mat = mats.lava.clone();
     colliders.solids.clear();
     plan.monsters.clear();
@@ -311,7 +410,7 @@ pub fn build_level(
 
     let mut b = Build {
         commands,
-        unit,
+        meshes,
         colliders: &mut colliders.solids,
     };
 
@@ -404,14 +503,13 @@ pub fn build_level(
     // === Locked door on the Atrium south wall (z=14), gap x[27,31] ===
     let door_aabb = Aabb::from_corners(Vec3::new(27.0, 0.0, 13.7), Vec3::new(31.0, 5.0, 14.3));
     let door_center = door_aabb.center();
-    let door_size = door_aabb.max - door_aabb.min;
     let solid_index = b.colliders.len();
     b.colliders.push(door_aabb);
-    let door_unit = b.unit.clone();
+    let door_mesh = b.meshes.add(box_mesh(door_aabb.min, door_aabb.max));
     b.commands.spawn((
-        Mesh3d(door_unit),
+        Mesh3d(door_mesh),
         MeshMaterial3d(mats.door.clone()),
-        Transform { translation: door_center, scale: door_size, ..default() },
+        Transform::from_translation(door_center),
         Door {
             solid_index,
             closed_pos: door_center,

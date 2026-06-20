@@ -63,7 +63,25 @@ a death topple. No binary mesh assets: the skeleton *is* the entity hierarchy.
 
 The skin textures live in `assets/textures/monsters/` and were generated with OpenAI's
 `gpt-image-2` (seamless dark-fantasy albedo maps — rotting flesh, flak armor, demon hide, obsidian
-hell-plate, etc.).
+hell-plate, etc.). The brush-built world is skinned the same way: the floors, walls, ceilings,
+trim, metal, door and lava use seamless tiling textures in `assets/textures/world/`. Each brush is
+emitted as its own mesh with **world-aligned UVs** (uniform texel density, so the tiling lines up
+between adjacent brushes), and the textures load with a repeat sampler.
+
+### Generating images
+
+All textures are produced by one idempotent script — the single registry of every image the game
+needs:
+
+```
+uv run scripts/generate_images.py          # render anything whose PNG is missing
+uv run scripts/generate_images.py --list   # show what exists vs. is missing
+uv run scripts/generate_images.py --force  # re-render everything
+```
+
+It scans the manifest, skips any image that already has a PNG on disk, and renders only the rest
+with `gpt-image-2` (reading `OPENAI_API_KEY` from the env or `.env`). Add an entry to the manifest
+to introduce a new texture; delete a PNG to regenerate it.
 
 ## What makes it feel like Quake
 
