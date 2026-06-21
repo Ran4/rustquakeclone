@@ -39,7 +39,7 @@ if it's missing or malformed the defaults above apply.
 | Action            | Key |
 |-------------------|-----|
 | Move              | **W A S D** |
-| Jump              | **Space** (hold to bunny-hop) |
+| Jump              | **Space** (hold to bunny-hop; tap again in mid-air next to a wall to **wall-jump** off it) |
 | Look / aim        | **Mouse** |
 | Fire              | **Left Mouse** (hold for automatic weapons) |
 | Select weapon     | **1–7** or **mouse wheel** |
@@ -126,7 +126,8 @@ to introduce a new texture; delete a PNG to regenerate it.
 ## What makes it feel like Quake
 
 - **Movement physics**: friction + ground/air acceleration with the classic air-strafe speed cap,
-  gravity, jumping, step-up over stairs/ledges — all on a custom swept-AABB collision solver.
+  gravity, jumping, wall-jumping (kick off a wall in mid-air for an upward boost + push away),
+  step-up over stairs/ledges — all on a custom swept-AABB collision solver.
 - **Crunchy combat**: hitscan + projectiles, radius splash with falloff and knockback, blood, gibs,
   expanding fireballs, dynamic muzzle/explosion lights, screen shake, view bob, weapon kick, damage flash.
 - **Atmosphere**: dark brush-built level, distance fog, HDR + bloom on emissive lava/lights, point lights.

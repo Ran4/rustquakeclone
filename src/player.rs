@@ -12,7 +12,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::common::{tune::*, *};
 use crate::level::{apply_fog, PlayerStart};
-use crate::physics::move_and_slide;
+use crate::physics::{move_and_slide, nearby_wall_normal};
 
 const SENS: f32 = 0.0022;
 
@@ -240,12 +240,26 @@ fn player_move(
 
     let mut vel = p.vel;
     let on_ground = p.on_ground;
+    let half = Vec3::from_array(PLAYER_HALF);
 
     if on_ground {
         vel = friction(vel, dt);
         if keys.pressed(KeyCode::Space) {
             vel.y = JUMP_SPEED;
             p.on_ground = false;
+            sfx.write(Sfx::global(Sound::Jump));
+        }
+    } else if keys.just_pressed(KeyCode::Space) {
+        // Wall jump: a fresh jump press while airborne, if we're up against a
+        // wall, kicks off it — an upward boost plus a push away from the wall.
+        if let Some(n) = nearby_wall_normal(tf.translation, half, &colliders.solids, WALLJUMP_REACH) {
+            vel.y = WALLJUMP_UP;
+            // Cancel any motion into the wall and guarantee an outward push,
+            // while preserving velocity along the wall (keeps momentum flowing).
+            let outward = vel.dot(n);
+            if outward < WALLJUMP_PUSH {
+                vel += n * (WALLJUMP_PUSH - outward);
+            }
             sfx.write(Sfx::global(Sound::Jump));
         }
     }
@@ -266,7 +280,6 @@ fn player_move(
     }
 
     let incoming_vy = vel.y;
-    let half = Vec3::from_array(PLAYER_HALF);
     let res = move_and_slide(tf.translation, half, vel, dt, &colliders.solids, STEP_HEIGHT);
     tf.translation = res.pos;
     p.vel = res.vel;

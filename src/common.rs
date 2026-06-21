@@ -20,6 +20,14 @@ pub mod tune {
     pub const JUMP_SPEED: f32 = 8.6;
     pub const STEP_HEIGHT: f32 = 0.5;
 
+    /// Wall jump: while airborne and pressed against a wall, a fresh jump press
+    /// kicks off it — an upward boost (`WALLJUMP_UP`) plus an outward push away
+    /// from the wall (`WALLJUMP_PUSH`). `WALLJUMP_REACH` is how close the
+    /// player's AABB must be to the wall (meters from its surface) to qualify.
+    pub const WALLJUMP_UP: f32 = 8.0;
+    pub const WALLJUMP_PUSH: f32 = 4.5;
+    pub const WALLJUMP_REACH: f32 = 0.2;
+
     /// Cap on downward fall speed (m/s). A fall accelerates up to this and then
     /// holds, so a long drop reads as a steady, trackable plunge instead of
     /// runaway acceleration. Set well above any normal-gameplay fall (you only

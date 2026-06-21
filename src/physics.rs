@@ -311,6 +311,30 @@ fn slide(pos: Vec3, half: Vec3, disp: Vec3, solids: &[Aabb]) -> (Vec3, Vec3, boo
     (cur, total, hit_any)
 }
 
+/// Find a vertical wall the AABB is pressed up against, within `reach` of its
+/// surface horizontally. Returns the wall's outward normal (unit, horizontal,
+/// pointing from the wall back toward the mover) — used for wall jumps. Probes
+/// the four cardinal horizontal directions and returns the nearest wall's
+/// normal; floors and ceilings are ignored.
+pub fn nearby_wall_normal(pos: Vec3, half: Vec3, solids: &[Aabb], reach: f32) -> Option<Vec3> {
+    let dirs = [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z];
+    let mut best: Option<(f32, Vec3)> = None;
+    for d in dirs {
+        let disp = d * reach;
+        for b in solids {
+            let eb = b.expand(half);
+            if let Some((t, n)) = segment_aabb(pos, disp, &eb) {
+                // Only count near-vertical surfaces (walls), not floors/ceilings.
+                if n.y.abs() < 0.7 && best.map_or(true, |(bt, _)| t < bt) {
+                    // Outward normal points back toward the mover: opposite of probe.
+                    best = Some((t, -d));
+                }
+            }
+        }
+    }
+    best.map(|(_, n)| n)
+}
+
 /// True if there's solid ground within a small distance below the AABB.
 pub fn ground_check(pos: Vec3, half: Vec3, solids: &[Aabb]) -> bool {
     let probe = 0.14;
