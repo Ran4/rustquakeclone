@@ -162,6 +162,61 @@ pub struct MoveResult {
     pub hit_wall: bool,
 }
 
+/// Push `pos` (centre of an AABB with half-extents `half`) out of any solid it
+/// is *inside*, along the axis of least penetration. Iterated so an overlap with
+/// several brushes at once (a corner) resolves.
+///
+/// This is the safety net for the swept solver. `segment_aabb` returns
+/// `(t=0, normal=ZERO)` when its origin is already inside a box, which makes
+/// `slide_move`/`slide` stall completely — `move_t` clamps to 0 (no motion) and
+/// the zero normal never clips the velocity, so a mover that ends up embedded in
+/// a brush (a spawn placed too close, a moving brush pushed into it, a fast
+/// knock-back into a corner) is frozen for good. Healing the penetration before
+/// the sweep keeps that degenerate case unreachable.
+///
+/// Only a *strictly* inside centre is moved: a mover resting flush against a
+/// face (separated by the `SKIN` gap the slide always leaves) is not inside, so
+/// normal resting contact, sliding and step-up are untouched.
+pub fn depenetrate(mut pos: Vec3, half: Vec3, solids: &[Aabb]) -> Vec3 {
+    for _ in 0..4 {
+        let mut moved = false;
+        for b in solids {
+            let eb = b.expand(half);
+            if pos.x <= eb.min.x
+                || pos.x >= eb.max.x
+                || pos.y <= eb.min.y
+                || pos.y >= eb.max.y
+                || pos.z <= eb.min.z
+                || pos.z >= eb.max.z
+            {
+                continue; // not strictly inside this expanded box
+            }
+            // Penetration depth toward each of the six faces; escape via the
+            // shallowest (minimum-translation vector).
+            let pen = [
+                (pos.x - eb.min.x, Vec3::NEG_X),
+                (eb.max.x - pos.x, Vec3::X),
+                (pos.y - eb.min.y, Vec3::NEG_Y),
+                (eb.max.y - pos.y, Vec3::Y),
+                (pos.z - eb.min.z, Vec3::NEG_Z),
+                (eb.max.z - pos.z, Vec3::Z),
+            ];
+            let (depth, dir) = pen
+                .iter()
+                .copied()
+                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+                .unwrap();
+            // Push fully out plus the SKIN gap, so the next sweep starts clear.
+            pos += dir * (depth + SKIN);
+            moved = true;
+        }
+        if !moved {
+            break;
+        }
+    }
+    pos
+}
+
 /// Sweep an AABB (center `pos`, half-extents `half`) through `vel` over `dt`,
 /// sliding along surfaces (clipping the velocity vector, Quake-style, so speed
 /// is preserved tangentially). Performs step-up so the mover climbs stairs and
@@ -174,6 +229,12 @@ pub fn move_and_slide(
     solids: &[Aabb],
     step_height: f32,
 ) -> MoveResult {
+    // Heal any pre-existing penetration first, so the inside-origin degenerate
+    // case in `segment_aabb` (t=0, ZERO normal -> zero progress) is never fed
+    // into the sweep. Without this a mover that ever gets embedded in a brush
+    // stays frozen forever.
+    let pos = depenetrate(pos, half, solids);
+
     // Plain velocity-clipping slide of the full motion.
     let (p1, v1, wall, _floor) = slide_move(pos, half, vel, dt, solids);
 
@@ -341,4 +402,62 @@ pub fn ground_check(pos: Vec3, half: Vec3, solids: &[Aabb]) -> bool {
     let (_, moved, hit) = slide(pos, half, Vec3::new(0.0, -probe, 0.0), solids);
     // Grounded if the downward probe was blocked before completing.
     hit && moved.y > -probe + 1e-4
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HALF: Vec3 = Vec3::new(0.4, 0.9, 0.4);
+
+    fn inside_any(pos: Vec3, half: Vec3, solids: &[Aabb]) -> bool {
+        solids.iter().any(|b| {
+            let eb = b.expand(half);
+            pos.x > eb.min.x
+                && pos.x < eb.max.x
+                && pos.y > eb.min.y
+                && pos.y < eb.max.y
+                && pos.z > eb.min.z
+                && pos.z < eb.max.z
+        })
+    }
+
+    /// A mover embedded in a brush must be pushed out, and must then actually
+    /// move when swept — the bug was that an embedded mover stayed frozen
+    /// because `segment_aabb` returns (t=0, ZERO normal) from inside a box.
+    #[test]
+    fn embedded_mover_is_freed_and_can_move() {
+        // A wall brush; place the mover's centre well inside its expanded box.
+        let wall = Aabb::from_corners(Vec3::new(-5.0, 0.0, 9.0), Vec3::new(5.0, 4.0, 9.8));
+        let solids = [wall];
+        let stuck = Vec3::new(0.0, 1.0, 9.4); // centre inside wall+half on every axis
+        assert!(inside_any(stuck, HALF, &solids), "test setup: should start embedded");
+
+        let freed = depenetrate(stuck, HALF, &solids);
+        assert!(!inside_any(freed, HALF, &solids), "depenetrate must free the mover");
+
+        // And a full swept move from the embedded start must now make progress
+        // instead of returning the unchanged position.
+        let res = move_and_slide(stuck, HALF, Vec3::new(0.0, 0.0, 5.0), 1.0 / 60.0, &solids, 0.5);
+        assert!(
+            res.pos.distance(stuck) > 1e-3,
+            "embedded mover stayed frozen: {:?} -> {:?}",
+            stuck,
+            res.pos
+        );
+        assert!(!inside_any(res.pos, HALF, &solids));
+    }
+
+    /// Resting flush on a floor (separated by the SKIN gap the slide leaves)
+    /// must NOT be perturbed — depenetrate only touches a strictly-inside centre.
+    #[test]
+    fn resting_contact_is_untouched() {
+        let floor = Aabb::from_corners(Vec3::new(-10.0, -0.5, -10.0), Vec3::new(10.0, 0.0, 10.0));
+        let solids = [floor];
+        // Box bottom = centre.y - 0.9 sits SKIN above the floor top (y=0).
+        let resting = Vec3::new(0.0, 0.9 + SKIN, 0.0);
+        assert!(!inside_any(resting, HALF, &solids), "test setup: resting is not embedded");
+        let after = depenetrate(resting, HALF, &solids);
+        assert!(after.distance(resting) < 1e-6, "resting contact moved: {:?} -> {:?}", resting, after);
+    }
 }

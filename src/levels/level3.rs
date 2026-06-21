@@ -153,7 +153,9 @@ pub fn build(b: &mut Build) {
     b.solid(Vec3::new(7.0, 2.5, -22.0), Vec3::new(13.5, 3.0, -19.0), brass.clone());
 
     // Stairs up the EAST landing from y=3 to a mid landing at y=7.
-    b.stairs(7.5, 12.5, -25.0, 7.0, 3.0, 7, Vec3::Z * -1.0);
+    // 8 steps over the 4 m rise = 0.5/step (== STEP_HEIGHT); 7 gave 0.57/step,
+    // taller than the player can step up, soft-locking a walking player here.
+    b.stairs(7.5, 12.5, -25.0, 7.0, 3.0, 8, Vec3::Z * -1.0);
     // East mid landing at y=7.
     b.solid(Vec3::new(7.0, 6.5, -33.0), Vec3::new(13.5, 7.0, -29.0), brass.clone());
 
@@ -163,7 +165,8 @@ pub fn build(b: &mut Build) {
     b.solid(Vec3::new(-13.5, 6.5, -33.0), Vec3::new(-7.0, 7.0, -29.0), brass.clone());
 
     // Stairs up the WEST mid landing from y=7 to the high gear-platform at y=11.
-    b.stairs(-12.5, -7.5, -35.0, 11.0, 7.0, 7, Vec3::Z * -1.0);
+    // 8 steps (0.5/step) so a walking player can climb — see east stairs above.
+    b.stairs(-12.5, -7.5, -35.0, 11.0, 7.0, 8, Vec3::Z * -1.0);
     // West high landing feeding the gear-platform.
     b.solid(Vec3::new(-13.5, 10.5, -42.0), Vec3::new(-7.0, 11.0, -38.0), brass.clone());
 

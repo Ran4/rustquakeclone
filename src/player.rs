@@ -12,7 +12,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::common::{tune::*, *};
 use crate::level::{apply_fog, PlayerStart};
-use crate::physics::{move_and_slide, nearby_wall_normal};
+use crate::physics::{depenetrate, move_and_slide, nearby_wall_normal};
 
 const SENS: f32 = 0.0022;
 
@@ -115,15 +115,24 @@ pub fn spawn_player(
     mut commands: Commands,
     start: Res<PlayerStart>,
     style: Res<LevelStyle>,
+    colliders: Res<WorldColliders>,
     mut hist: ResMut<PlayerHistory>,
 ) {
     hist.clear();
     let fov = 80f32.to_radians();
     let fog = apply_fog(&style);
+    // Never spawn embedded in a brush: an overlapping start point freezes the
+    // swept solver (see physics::depenetrate). Heal it here and warn so the map
+    // author hears about it instead of shipping a soft-locked level.
+    let half = Vec3::from_array(PLAYER_HALF);
+    let spawn_pos = depenetrate(start.pos, half, &colliders.solids);
+    if spawn_pos != start.pos {
+        warn!("player spawn {:?} overlapped a solid; nudged to {:?}", start.pos, spawn_pos);
+    }
     commands
         .spawn((
             Player { yaw: start.yaw, ..default() },
-            Transform::from_translation(start.pos)
+            Transform::from_translation(spawn_pos)
                 .with_rotation(Quat::from_rotation_y(start.yaw)),
             Visibility::default(),
             Faction::Player,
