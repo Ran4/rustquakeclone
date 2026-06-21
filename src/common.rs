@@ -20,6 +20,13 @@ pub mod tune {
     pub const JUMP_SPEED: f32 = 8.6;
     pub const STEP_HEIGHT: f32 = 0.5;
 
+    /// Cap on downward fall speed (m/s). A fall accelerates up to this and then
+    /// holds, so a long drop reads as a steady, trackable plunge instead of
+    /// runaway acceleration. Set well above any normal-gameplay fall (you only
+    /// reach it after dropping ~20m), so ordinary jumps/ledges are unaffected —
+    /// it only bites on the deep void falls (e.g. level 3's foundry shaft).
+    pub const TERMINAL_VELOCITY: f32 = 32.0;
+
     /// Player AABB half-extents and eye offset from the AABB center.
     pub const PLAYER_HALF: [f32; 3] = [0.4, 0.9, 0.4];
     pub const EYE_OFFSET: f32 = 0.65; // eye sits near the top of the box

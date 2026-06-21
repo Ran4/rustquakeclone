@@ -26,6 +26,15 @@ use crate::level::ItemKind;
 use crate::level::MonsterKind::*;
 use crate::level::Wall;
 
+/// Y of the molten core at the bottom of the foundry shaft. Deep enough that a
+/// fall at the capped terminal velocity takes ~15 seconds before you plunge into
+/// it — long enough to look up and watch the ship recede above you.
+const VOID_FLOOR: f32 = -460.0;
+/// Plunge past this and you die instantly (just above the core surface). An
+/// altitude kill, so a fast faller who has drifted clear of the core's footprint
+/// still dies on cue rather than falling forever (there is no air drag).
+const VOID_KILL_Y: f32 = -455.0;
+
 pub fn build(b: &mut Build) {
     // Player spawns in the boiler room facing north (-Z), into the machine.
     b.start.pos = Vec3::new(0.0, 1.0, 7.0);
@@ -68,20 +77,53 @@ pub fn build(b: &mut Build) {
 
     // ============================================================
     // FOUNDRY HALL  x[-14,14] z[-46,-14]  floor y=0  h=16 (tall + vertical)
-    //   - molten channel runs down the middle (x[-3,3])
-    //   - side floors at y=0 on west (x[-14,-3]) and east (x[3,14])
-    //   - catwalks at different heights span across the channel
+    //   This is the open belly of the flying Brass Leviathan. The catwalk climb
+    //   hugs solid SIDE LEDGES (west x[-14,-3], east x[3,14]); down the centre a
+    //   molten vent shaft x[-3,3] z[-36,-15] is left OPEN — it drops clean
+    //   through the keel into open sky. Slip off into it and you plunge the
+    //   ~15-second length of the ship's wake to the molten core far below.
+    //   (Look up on the way down: the Leviathan's ribbed brass hull shrinks
+    //   above you — see `leviathan_hull`.)
+    //   North of the shaft (z[-46,-36]) and the south entry lip stay decked so
+    //   the key-descent and the bulkhead door remain reachable.
     // ============================================================
-    b.room(
-        -14.0, 14.0, -46.0, -14.0, 0.0, 16.0,
-        &[Wall::S((-2.0, 2.0)), Wall::N((-3.0, 3.0))],
-    );
+    let floor = b.theme.floor.clone();
+    let wall = b.theme.wall.clone();
+    let ceil = b.theme.ceiling.clone();
+    let hall_h = 16.0;
 
-    // Molten-metal channel down the centre.
-    b.hazard(-3.0, 3.0, -45.0, -15.0, 0.0);
-    // Channel retaining walls (brass kerb) so the lava reads as a sunken trough.
-    b.solid(Vec3::new(-3.4, 0.0, -45.0), Vec3::new(-3.0, 0.6, -15.0), brass.clone());
-    b.solid(Vec3::new(3.0, 0.0, -45.0), Vec3::new(3.4, 0.6, -15.0), brass.clone());
+    // Ceiling + four walls (the same doorway gaps the old `room()` carved).
+    b.ceiling(-14.0, 14.0, -46.0, -14.0, hall_h, ceil);
+    b.wall_x(-14.0, 14.0, -14.0, 0.0, hall_h, wall.clone(), &[(-2.0, 2.0)]); // south (entry)
+    b.wall_x(-14.0, 14.0, -46.0, 0.0, hall_h, wall.clone(), &[(-3.0, 3.0)]); // north (bulkhead)
+    b.wall_z(-46.0, -14.0, 14.0, 0.0, hall_h, wall.clone(), &[]);            // east flank
+    b.wall_z(-46.0, -14.0, -14.0, 0.0, hall_h, wall.clone(), &[]);           // west flank
+
+    // Deck plating: solid side ledges + the north/south end strips. The central
+    // shaft x[-3,3] z[-36,-15] is deliberately UNFLOORED — that gap is the drop.
+    b.floor(-14.0, -3.0, -46.0, -14.0, 0.0, floor.clone()); // west ledge (full length)
+    b.floor(3.0, 14.0, -46.0, -14.0, 0.0, floor.clone());   // east ledge (full length)
+    b.floor(-3.0, 3.0, -46.0, -36.0, 0.0, floor.clone());   // north deck (key-descent + door)
+    b.floor(-3.0, 3.0, -15.0, -14.0, 0.0, floor.clone());   // south entry lip
+
+    // Brass kerb rim framing the shaft — you step over a lip to fall in (and it
+    // catches a careless strafe, but a Knight's shove or a grenade still tips you).
+    b.solid(Vec3::new(-3.4, 0.0, -36.0), Vec3::new(-3.0, 0.6, -15.0), brass.clone());
+    b.solid(Vec3::new(3.0, 0.0, -36.0), Vec3::new(3.4, 0.6, -15.0), brass.clone());
+    // A molten glow sheet just under the shaft mouth so the drop reads as hot.
+    b.deco(Vec3::new(-3.0, -0.6, -36.0), Vec3::new(3.0, -0.2, -15.0), valve.clone());
+
+    // The molten CORE far below the whole ship — a ~15s plunge at terminal
+    // velocity. The altitude kill plane does the actual killing (so a faller who
+    // has drifted far off-centre still dies on cue); the wide glow + hazard make
+    // the core fill the view below as you arrive.
+    b.void_kill(VOID_KILL_Y);
+    b.hazard(-200.0, 200.0, -260.0, 200.0, VOID_FLOOR);
+    b.deco(Vec3::new(-200.0, VOID_FLOOR - 1.0, -260.0), Vec3::new(200.0, VOID_FLOOR + 1.2, 200.0), valve.clone());
+    b.light(Vec3::new(0.0, VOID_FLOOR + 18.0, -24.0), rgb(1.0, 0.45, 0.12), 5_000_000.0, 180.0);
+
+    // The Leviathan's hull, hanging beneath the deck — what you look up at.
+    leviathan_hull(b, &gearcore, &valve);
 
     // --- Giant decorative GEARS on the side walls (stacked thin discs) ---
     gear(b, &gearcore, &brass, Vec3::new(-13.6, 5.0, -22.0), 3.0);
@@ -250,4 +292,80 @@ fn gear_platform(
     b.deco(Vec3::new(c.x + t - 0.6, c.y, c.z - 0.8), Vec3::new(c.x + t, c.y + 0.3, c.z + 0.8), core.clone());
     // Glowing central hub.
     b.deco(Vec3::new(c.x - 1.2, c.y, c.z - 1.2), Vec3::new(c.x + 1.2, c.y + 0.25, c.z + 1.2), rim.clone());
+}
+
+/// One inward-tapering band of the hull belly, [y0,y1] tall and `xh` wide,
+/// running z[zlo,zhi] — but with the central molten vent (x[-3,3] z[-36,-15])
+/// CARVED OUT so the foundry shaft drops clean through every layer. All
+/// visual-only (deco): the faller travels straight down the open vent and
+/// should never clip the hull.
+fn hull_band(b: &mut Build, mat: &Handle<StandardMaterial>, y0: f32, y1: f32, xh: f32, zlo: f32, zhi: f32) {
+    const VX: f32 = 3.0; // vent half-width
+    const V0: f32 = -36.0; // vent z (north)
+    const V1: f32 = -15.0; // vent z (south)
+    // North of the vent.
+    if zlo < V0 {
+        b.deco(Vec3::new(-xh, y0, zlo), Vec3::new(xh, y1, V0.min(zhi)), mat.clone());
+    }
+    // South of the vent.
+    if zhi > V1 {
+        b.deco(Vec3::new(-xh, y0, V1.max(zlo)), Vec3::new(xh, y1, zhi), mat.clone());
+    }
+    // Alongside the vent: port + starboard keel rails only.
+    let (cz0, cz1) = (zlo.max(V0), zhi.min(V1));
+    if cz1 > cz0 && xh > VX {
+        b.deco(Vec3::new(-xh, y0, cz0), Vec3::new(-VX, y1, cz1), mat.clone());
+        b.deco(Vec3::new(VX, y0, cz0), Vec3::new(xh, y1, cz1), mat.clone());
+    }
+}
+
+/// The flying Brass Leviathan's hull, hung beneath the playable decks
+/// (z[~8 stern .. ~-66 bow]). Stacked inward-tapering brass bands give it a
+/// boat-bellied keel, a pointed prow rams forward at the bow, and a glowing
+/// molten seam vents down the open centre — so a player who has fallen below
+/// the keel and looks up sees a ribbed brass ship shrinking into the haze.
+fn leviathan_hull(
+    b: &mut Build,
+    core: &Handle<StandardMaterial>,
+    glow: &Handle<StandardMaterial>,
+) {
+    // Ember-lit brass plating: a foundry-hot hull that self-glows just enough to
+    // hold its silhouette against the void when you've fallen far below it.
+    let hot = b.tex_glow("textures/world/metal.png", 0.5, 0.35, LinearRgba::rgb(0.30, 0.14, 0.05));
+    let h = &hot;
+
+    // Belly bands, widest just under the deck and tapering to a keel.
+    hull_band(b, h, -2.4, -0.3, 13.5, -64.0, 8.0);
+    hull_band(b, h, -5.0, -2.4, 11.0, -61.0, 5.0);
+    hull_band(b, h, -8.0, -5.0, 8.0, -57.0, 1.0);
+    hull_band(b, h, -11.5, -8.0, 5.0, -52.0, -3.0);
+
+    // Deep keel fins fore & aft (clear of the central vent), giving a real keel.
+    b.deco(Vec3::new(-2.0, -13.5, -52.0), Vec3::new(2.0, -11.5, -37.0), hot.clone()); // fore keel
+    b.deco(Vec3::new(-2.0, -13.5, -14.0), Vec3::new(2.0, -11.5, -3.0), hot.clone());   // aft keel
+    // Pointed prow ram thrusting forward at the bow (-Z).
+    b.deco(Vec3::new(-2.5, -9.5, -61.0), Vec3::new(2.5, -4.0, -57.0), hot.clone());
+    b.deco(Vec3::new(-1.6, -8.5, -67.0), Vec3::new(1.6, -5.0, -61.0), hot.clone());
+    b.deco(Vec3::new(-0.8, -7.5, -71.0), Vec3::new(0.8, -5.8, -67.0), hot.clone());
+
+    // Rib bands strapped across the belly (a touch proud, glowing brighter).
+    for z in [-50.0, -42.0, -28.0, -20.0, -6.0, 2.0] {
+        b.deco(Vec3::new(-11.5, -5.5, z - 0.4), Vec3::new(11.5, -4.6, z + 0.4), core.clone());
+    }
+
+    // Glowing molten vent seam running the open centre (seen up the shaft AND
+    // from directly below the keel).
+    b.deco(Vec3::new(-2.7, -11.2, -36.0), Vec3::new(2.7, -10.7, -15.0), core.clone());
+
+    // Rows of glowing portholes along both flanks.
+    for z in [-50.0, -42.0, -34.0, -26.0, -18.0, -10.0, -2.0] {
+        b.deco(Vec3::new(-11.6, -3.4, z - 0.5), Vec3::new(-11.3, -2.6, z + 0.5), glow.clone());
+        b.deco(Vec3::new(11.3, -3.4, z - 0.5), Vec3::new(11.6, -2.6, z + 0.5), glow.clone());
+    }
+
+    // Up-lights slung beneath the keel so the hull's form is washed with warm
+    // light from below — the shape a faller reads as a ship.
+    b.light(Vec3::new(0.0, -20.0, -8.0), rgb(1.0, 0.6, 0.25), 2_600_000.0, 90.0);
+    b.light(Vec3::new(0.0, -22.0, -40.0), rgb(1.0, 0.55, 0.2), 2_600_000.0, 90.0);
+    b.light(Vec3::new(0.0, -26.0, -58.0), rgb(1.0, 0.5, 0.2), 1_800_000.0, 80.0);
 }

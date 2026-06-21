@@ -140,6 +140,7 @@ pub fn apply_theme_and_build(
     plan.ambush.clear();
     plan.exit = None;
     lava.volumes.clear();
+    lava.kill_y = f32::NEG_INFINITY;
 
     let mut b = Build {
         commands,
@@ -188,6 +189,11 @@ pub struct PlayerStart {
 #[derive(Resource, Default)]
 pub struct LavaVolumes {
     pub volumes: Vec<Aabb>,
+    /// "Fell out of the world" plane: a player whose center drops below this Y
+    /// dies instantly (no footprint to miss, no matter how far a fast faller has
+    /// drifted). `NEG_INFINITY` on levels with no bottomless void. See
+    /// `Build::void_kill`.
+    pub kill_y: f32,
 }
 
 // What kind of monster to place.
@@ -359,7 +365,10 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_emissive: LinearRgba::rgb(4.5, 1.6, 0.2),
             hazard_rough: 0.5,
             accent: (rgb(1.0, 0.7, 0.3), LinearRgba::rgb(3.0, 1.6, 0.4)),
-            fog: (rgb(0.2, 0.16, 0.12), 16.0, 60.0),
+            // Long warm haze: the foundry is the open belly of a flying machine,
+            // so the eye needs to carry far enough to watch the hull recede when
+            // you plunge down the central shaft.
+            fog: (rgb(0.14, 0.10, 0.07), 18.0, 150.0),
             ambient: (rgb(0.55, 0.45, 0.35), 230.0),
             clear: rgb(0.07, 0.05, 0.03),
             hazard_dot: 12.0,
@@ -612,6 +621,12 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
         tex_mat(self.materials, self.assets, path, rough, metal, Color::WHITE, LinearRgba::BLACK)
     }
 
+    /// A textured (tiling) material that also self-emits — hot metal, glowing
+    /// rock, an ember-lit hull — so its surface stays readable in low light.
+    pub fn tex_glow(&mut self, path: &str, rough: f32, metal: f32, emissive: LinearRgba) -> Handle<StandardMaterial> {
+        tex_mat(self.materials, self.assets, path, rough, metal, Color::WHITE, emissive)
+    }
+
     // -- walls / floors -----------------------------------------------------
     /// Wall running along X at depth `z`, height [y0,y1], with door-gaps carved.
     pub fn wall_x(&mut self, x0: f32, x1: f32, z: f32, y0: f32, y1: f32, mat: Handle<StandardMaterial>, gaps: &[(f32, f32)]) {
@@ -783,6 +798,15 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
             Vec3::new(x0, top - 1.2, z0),
             Vec3::new(x1, top + 0.2, z1),
         ));
+    }
+
+    /// Set the "fell out of the world" kill plane: any player whose center
+    /// drops below `y` dies instantly. For levels with a bottomless void where a
+    /// fast faller (no air drag — horizontal speed is kept the whole drop) would
+    /// otherwise sail past a finite hazard pool and fall forever. Place it at the
+    /// molten/void floor so you die just as you plunge into it.
+    pub fn void_kill(&mut self, y: f32) {
+        self.lava.kill_y = y;
     }
 
     // -- lights -------------------------------------------------------------

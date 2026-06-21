@@ -101,6 +101,15 @@ fn lava_damage(
 ) {
     let dt = time.delta_secs();
     let Ok((pe, ptf)) = q_player.single() else { return };
+
+    // Fell into the bottomless void (e.g. level 3's foundry shaft): die the
+    // instant you plunge past the molten core, however far you've drifted.
+    if ptf.translation.y < lava.kill_y {
+        flash.write(ScreenFlash { color: style.hazard_flash, strength: 1.0 });
+        dmg.write(DamageEvent { target: pe, amount: 10_000.0, source: None, knockback: Vec3::ZERO });
+        return;
+    }
+
     let pbox = Aabb::from_center_half(ptf.translation, Vec3::from_array(PLAYER_HALF));
     let burning = lava.volumes.iter().any(|v| v.overlaps(&pbox));
     if burning {

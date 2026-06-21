@@ -194,6 +194,9 @@ fn player_move(
 
     if !p.on_ground {
         vel.y -= GRAVITY * dt;
+        // Cap terminal velocity so a long drop is a steady plunge, not a
+        // runaway accelerating blur (lets you track the world receding above).
+        vel.y = vel.y.max(-TERMINAL_VELOCITY);
     }
 
     let incoming_vy = vel.y;
