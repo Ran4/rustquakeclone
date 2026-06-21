@@ -78,7 +78,7 @@ impl WeaponKind {
             WeaponKind::Lightning => Stats { cooldown: 0.06, cost: 1, sound: Sound::Lightning, shake: 0.05, kick: 0.12, mode: Mode::Beam { damage: 8.0 } },
             // Free melee fallback: short reach, no ammo, big knockback that flings
             // monsters away (cost 0 so the ammo check always passes).
-            WeaponKind::Whip => Stats { cooldown: 0.5, cost: 0, sound: Sound::Whip, shake: 0.1, kick: 0.45, mode: Mode::Melee { damage: 20.0, range: 4.5, knockback: 22.0 } },
+            WeaponKind::Whip => Stats { cooldown: 0.75, cost: 0, sound: Sound::Whip, shake: 0.1, kick: 0.75, mode: Mode::Melee { damage: 20.0, range: 4.5, knockback: 30.0 } },
         }
     }
 }
