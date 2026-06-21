@@ -169,7 +169,7 @@ fn stats(kind: MonsterKind) -> MStats {
     match kind {
         Grunt => MStats { health: 30.0, speed: 3.4, sight: 30.0, attack_range: 24.0, melee_range: 0.0, cd: 1.3, damage: 9.0, half: Vec3::new(0.4, 0.9, 0.4), flying: false, color: rgb(0.45, 0.36, 0.28), emissive: LinearRgba::BLACK },
         Enforcer => MStats { health: 55.0, speed: 3.1, sight: 32.0, attack_range: 26.0, melee_range: 0.0, cd: 1.5, damage: 10.0, half: Vec3::new(0.45, 0.95, 0.45), flying: false, color: rgb(0.32, 0.4, 0.5), emissive: LinearRgba::rgb(0.0, 0.05, 0.2) },
-        Knight => MStats { health: 60.0, speed: 5.2, sight: 28.0, attack_range: 2.2, melee_range: 2.4, cd: 0.85, damage: 16.0, half: Vec3::new(0.4, 0.9, 0.4), flying: false, color: rgb(0.55, 0.56, 0.6), emissive: LinearRgba::BLACK },
+        Knight => MStats { health: 60.0, speed: 7.2, sight: 28.0, attack_range: 2.2, melee_range: 2.4, cd: 0.85, damage: 16.0, half: Vec3::new(0.4, 0.9, 0.4), flying: false, color: rgb(0.55, 0.56, 0.6), emissive: LinearRgba::BLACK },
         Scrag => MStats { health: 45.0, speed: 4.0, sight: 32.0, attack_range: 28.0, melee_range: 0.0, cd: 1.4, damage: 10.0, half: Vec3::new(0.5, 0.7, 0.5), flying: true, color: rgb(0.3, 0.55, 0.3), emissive: LinearRgba::rgb(0.05, 0.3, 0.05) },
         Ogre => MStats { health: 200.0, speed: 2.7, sight: 28.0, attack_range: 22.0, melee_range: 2.8, cd: 1.9, damage: 22.0, half: Vec3::new(0.6, 1.1, 0.6), flying: false, color: rgb(0.4, 0.3, 0.22), emissive: LinearRgba::BLACK },
         DeathKnight => MStats { health: 350.0, speed: 3.4, sight: 32.0, attack_range: 26.0, melee_range: 3.0, cd: 1.6, damage: 22.0, half: Vec3::new(0.6, 1.2, 0.6), flying: false, color: rgb(0.4, 0.12, 0.14), emissive: LinearRgba::rgb(0.4, 0.0, 0.05) },
