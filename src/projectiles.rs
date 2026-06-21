@@ -221,10 +221,11 @@ fn projectile_move(
             }
         }
 
-        // Grenade fuse expiry.
+        // Grenade fuse expiry. A timed (non-impact) detonation gets a 50% larger
+        // blast radius than a grenade that explodes on a direct hit.
         if !exploded && p.kind == ProjKind::Grenade && p.fuse <= 0.0 {
             let pos = tf.translation;
-            expl.write(ExplosionEvent { pos, radius: p.splash_radius, damage: p.splash_damage, source: p.source, from_player: p.from_player, color: rgb(1.0, 0.6, 0.2), push: p.push });
+            expl.write(ExplosionEvent { pos, radius: p.splash_radius * 1.5, damage: p.splash_damage, source: p.source, from_player: p.from_player, color: rgb(1.0, 0.6, 0.2), push: p.push });
             sfx.write(Sfx::at(Sound::Explosion, pos));
             exploded = true;
         }

@@ -1,5 +1,7 @@
 //! The player: spawn, FPS mouse-look, Quake-style movement physics, cursor grab.
 
+use std::collections::VecDeque;
+
 use bevy::prelude::*;
 use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -23,13 +25,71 @@ impl Plugin for PlayerPlugin {
         // view judder. Per-frame movement is smooth and lower-latency — and it's
         // how Quake itself ran. All the movement math is dt-scaled, so a variable
         // timestep is fine. Order: grab → look → move so aim is applied first.
-        app.add_systems(
-            Update,
-            (cursor_grab, player_look, player_move)
-                .chain()
-                .run_if(in_state(GameState::Playing)),
-        );
+        app.init_resource::<PlayerHistory>()
+            .add_systems(
+                Update,
+                (cursor_grab, player_look, player_move)
+                    .chain()
+                    .run_if(in_state(GameState::Playing)),
+            )
+            .add_systems(
+                Update,
+                record_player_history
+                    .after(player_move)
+                    .run_if(in_state(GameState::Playing)),
+            );
     }
+}
+
+/// A short trail of the player's recent eye positions, so monsters can aim where
+/// the player *was* a moment ago instead of tracking them perfectly. Sampled
+/// every frame; samples older than `MAX_AGE` are dropped.
+#[derive(Resource, Default)]
+pub struct PlayerHistory {
+    /// (elapsed_secs, eye_pos), oldest at the front, newest at the back.
+    samples: VecDeque<(f32, Vec3)>,
+}
+impl PlayerHistory {
+    const MAX_AGE: f32 = 0.6;
+
+    pub fn clear(&mut self) {
+        self.samples.clear();
+    }
+
+    fn record(&mut self, now: f32, eye: Vec3) {
+        self.samples.push_back((now, eye));
+        while let Some(&(t, _)) = self.samples.front() {
+            if now - t > Self::MAX_AGE {
+                self.samples.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// The eye position `delay` seconds in the past (nearest recorded sample).
+    /// `None` until any history has accumulated.
+    pub fn position_ago(&self, now: f32, delay: f32) -> Option<Vec3> {
+        let target = now - delay;
+        let mut best: Option<(f32, Vec3)> = None;
+        for &(t, p) in &self.samples {
+            let d = (t - target).abs();
+            if best.map_or(true, |(bd, _)| d < bd) {
+                best = Some((d, p));
+            }
+        }
+        best.map(|(_, p)| p)
+    }
+}
+
+/// Sample the player's eye position into `PlayerHistory` each frame.
+fn record_player_history(
+    time: Res<Time>,
+    mut hist: ResMut<PlayerHistory>,
+    q: Query<&Transform, With<Player>>,
+) {
+    let Ok(tf) = q.single() else { return };
+    hist.record(time.elapsed_secs(), tf.translation + Vec3::Y * EYE_OFFSET);
 }
 
 #[derive(Component)]
@@ -51,7 +111,13 @@ pub struct PlayerCamera;
 
 /// Spawn the player root (carrying movement state) with a child first-person
 /// camera that holds all the post-processing. Called on entering Playing.
-pub fn spawn_player(mut commands: Commands, start: Res<PlayerStart>, style: Res<LevelStyle>) {
+pub fn spawn_player(
+    mut commands: Commands,
+    start: Res<PlayerStart>,
+    style: Res<LevelStyle>,
+    mut hist: ResMut<PlayerHistory>,
+) {
+    hist.clear();
     let fov = 80f32.to_radians();
     let fog = apply_fog(&style);
     commands

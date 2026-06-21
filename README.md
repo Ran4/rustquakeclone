@@ -27,7 +27,7 @@ startup (omit any field to keep its default):
     width: 1280,        // window size, used only when fullscreen is false
     height: 720,
     vsync: true,        // false → uncap the frame rate (watch the fps meter, top-left)
-    start_level: "random",  // 1–7 to always start on that level, "random" each run (default)
+    start_level: 1,         // 1–7 to always start on that level (default 1), "random" for a random one each run
 )
 ```
 
@@ -66,8 +66,9 @@ door → reach the exit slipgate** — but the world around it changes completel
 7. **Sanctum of the Void** — the cosmic finale; floating obsidian islands and glowing crystal
    bridges over a lethal void rift, a Death Knight boss guarding the key.
 
-- **A fresh run starts on a random level.** Finish a level and you carry your weapons, ammo, health
-  and armor straight into the next one; finish the last and the campaign is won.
+- **A fresh run starts on level 1** (set `start_level` in `config.ron` to a fixed level or `"random"`).
+  Finish a level and you carry your weapons, ammo, health and armor straight into the next one; finish
+  the last and the campaign is won.
 - A **"Level N: Name"** banner announces each level for a few seconds as it begins.
 - **Objective HUD** tracks *Find the Silver Key → Reach the Exit* plus a live kill count.
 

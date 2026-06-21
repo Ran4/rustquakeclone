@@ -16,13 +16,13 @@ pub struct Config {
     pub height: u32,
     /// Cap the frame rate to the monitor's refresh rate (avoids tearing).
     pub vsync: bool,
-    /// Which level a fresh run begins on: `1`..`7`, or `"random"` (the default).
+    /// Which level a fresh run begins on: `1`..`7` (default `1`), or `"random"`.
     pub start_level: StartLevel,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { fullscreen: true, width: 1280, height: 720, vsync: true, start_level: StartLevel::Random }
+        Self { fullscreen: true, width: 1280, height: 720, vsync: true, start_level: StartLevel::default() }
     }
 }
 
@@ -37,7 +37,7 @@ pub enum StartLevel {
 
 impl Default for StartLevel {
     fn default() -> Self {
-        StartLevel::Random
+        StartLevel::Fixed(1)
     }
 }
 

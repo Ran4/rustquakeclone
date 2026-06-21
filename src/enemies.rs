@@ -6,9 +6,15 @@ use crate::common::{tune::EYE_OFFSET, *};
 use crate::effects::Lifetime;
 use crate::level::{MonsterKind, SpawnPlan};
 use crate::monster_model::{build_monster_visual, Dying, MonsterMats, MonsterTextures};
-use crate::physics::{line_of_sight, move_and_slide};
-use crate::player::Player;
+use crate::physics::{line_of_sight, move_and_slide, ray_aabb, raycast_world, Aabb};
+use crate::player::{Player, PlayerHistory};
 use crate::projectiles::{spawn_projectile, ProjKind};
+
+/// How far in the past the Grunt aims — it shoots at where the player was this
+/// long ago, so moving makes the shot lag behind you and become dodgeable.
+const GRUNT_AIM_LAG: f32 = 0.090;
+/// Random aim error per axis (yaw + pitch), uniform in ±this many degrees.
+const GRUNT_AIM_SPREAD_DEG: f32 = 5.0;
 
 /// A thin emissive tracer line (Grunt shot telegraph / hit feedback).
 fn draw_tracer(commands: &mut Commands, gfx: &GfxAssets, a: Vec3, b: Vec3) {
@@ -258,6 +264,7 @@ fn enemy_ai(
     time: Res<Time>,
     colliders: Res<WorldColliders>,
     gfx: Res<GfxAssets>,
+    history: Res<PlayerHistory>,
     mut commands: Commands,
     mut rng_state: Local<u32>,
     mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Knockback), (Without<Player>, Without<Dying>)>,
@@ -269,6 +276,7 @@ fn enemy_ai(
     if dt <= 0.0 {
         return;
     }
+    let now = time.elapsed_secs();
     let Ok((player_e, player_tf)) = q_player.single() else { return };
     let player_pos = player_tf.translation;
     let player_eye = player_pos + Vec3::Y * EYE_OFFSET;
@@ -324,15 +332,17 @@ fn enemy_ai(
         }
 
         // Resolve a pending Grunt hitscan once the wind-up telegraph elapses.
+        // The Grunt aims where the player *was* ~250ms ago (so moving lets the
+        // shot lag behind you) with a small random spread, and only connects if
+        // that ray truly strikes the player — no more guaranteed hitscan.
         if en.windup > 0.0 {
             en.windup -= dt;
-            if en.windup <= 0.0 && los {
-                draw_tracer(&mut commands, &gfx, eye, player_eye);
-                sfx.write(Sfx::at(Sound::Shotgun, eye));
-                if rand() < 0.7 {
-                    let to = (player_eye - eye).normalize_or_zero();
-                    dmg.write(DamageEvent { target: player_e, amount: en.damage, source: Some(e), knockback: to * 2.0 });
-                }
+            if en.windup <= 0.0 {
+                let aim = history.position_ago(now, GRUNT_AIM_LAG).unwrap_or(player_eye);
+                resolve_grunt_shot(
+                    &mut commands, &gfx, &colliders.solids, e, player_e, eye, player_pos,
+                    aim, en.damage, &mut dmg, &mut sfx, &mut rand,
+                );
             }
         }
 
@@ -472,5 +482,61 @@ fn do_attack(
                 }
             }
         }
+    }
+}
+
+/// Resolve a Grunt's hitscan. Unlike a perfect tracker, it aims at `aim` (where
+/// the player was ~250ms ago), perturbs that aim by a uniform ±4° in yaw and
+/// pitch, then traces the shot: it deals damage only if the spread ray strikes
+/// the player's hurtbox before any wall. The tracer is drawn along the actual
+/// shot so a miss is visible whizzing past.
+#[allow(clippy::too_many_arguments)]
+fn resolve_grunt_shot(
+    commands: &mut Commands,
+    gfx: &GfxAssets,
+    solids: &[Aabb],
+    self_e: Entity,
+    player_e: Entity,
+    eye: Vec3,
+    player_pos: Vec3,
+    aim: Vec3,
+    damage: f32,
+    dmg: &mut MessageWriter<DamageEvent>,
+    sfx: &mut MessageWriter<Sfx>,
+    rand: &mut impl FnMut() -> f32,
+) {
+    const MAX_RANGE: f32 = 100.0;
+    sfx.write(Sfx::at(Sound::Shotgun, eye));
+
+    // Base direction toward the lagged aim point.
+    let mut base = (aim - eye).normalize_or_zero();
+    if base == Vec3::ZERO {
+        base = Vec3::NEG_Z;
+    }
+    // Apply a uniform ±spread jitter in yaw (left/right) and pitch (up/down).
+    let spread = GRUNT_AIM_SPREAD_DEG.to_radians();
+    let yaw = (rand() * 2.0 - 1.0) * spread;
+    let pitch = (rand() * 2.0 - 1.0) * spread;
+    let right = {
+        let r = base.cross(Vec3::Y).normalize_or_zero();
+        if r == Vec3::ZERO { Vec3::X } else { r }
+    };
+    let dir = (Quat::from_axis_angle(Vec3::Y, yaw)
+        * Quat::from_axis_angle(right, pitch)
+        * base)
+        .normalize_or_zero();
+
+    // Nearest wall along the shot, and whether the player is struck before it.
+    let wall_t = raycast_world(eye, dir, MAX_RANGE, solids).map(|(t, _, _)| t);
+    let player_aabb = Aabb::from_center_half(player_pos, Vec3::from_array(tune::PLAYER_HALF));
+    let hit_t = ray_aabb(eye, dir, MAX_RANGE, &player_aabb)
+        .map(|(t, _)| t)
+        .filter(|&t| wall_t.map_or(true, |w| t <= w));
+
+    let end_t = hit_t.or(wall_t).unwrap_or(MAX_RANGE);
+    draw_tracer(commands, gfx, eye, eye + dir * end_t);
+
+    if hit_t.is_some() {
+        dmg.write(DamageEvent { target: player_e, amount: damage, source: Some(self_e), knockback: dir * 2.0 });
     }
 }

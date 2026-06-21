@@ -18,7 +18,8 @@ impl Plugin for CombatPlugin {
 }
 
 /// Resolve explosion messages into per-target damage + knockback.
-/// Player explosions hurt everyone (so rocket-jumps cost self-damage); monster
+/// Player explosions hit everyone in range — including the firer, who is hurled
+/// by the blast (a rocket/grenade jump) for reduced self-damage. Monster
 /// explosions never hurt the firer or other monsters (no friendly fire).
 fn handle_explosions(
     mut explosions: MessageReader<ExplosionEvent>,
@@ -27,11 +28,9 @@ fn handle_explosions(
 ) {
     for ex in explosions.read() {
         for (e, gt, hb, faction) in &targets {
-            if ex.source == Some(e) {
-                continue; // never self-damage the firer
-            }
+            let self_blast = ex.source == Some(e);
             if !ex.from_player && *faction == Faction::Monster {
-                continue; // monster splash doesn't harm other monsters
+                continue; // monster splash doesn't harm other monsters (incl. the firer)
             }
             let center = gt.translation();
             let to = center - ex.pos;
@@ -42,9 +41,12 @@ fn handle_explosions(
             let falloff = 1.0 - dist / ex.radius;
             let dir = if dist > 0.01 { to / dist } else { Vec3::Y };
             let _ = hb;
+            // The firer is launched by their own blast (rocket/grenade jump), but
+            // takes only half self-damage so a single jump isn't lethal.
+            let dmg_scale = if self_blast { 0.5 } else { 1.0 };
             damage.write(DamageEvent {
                 target: e,
-                amount: ex.damage * falloff,
+                amount: ex.damage * falloff * dmg_scale,
                 source: ex.source,
                 knockback: dir * ex.push * falloff + Vec3::Y * ex.push * 0.25 * falloff,
             });
