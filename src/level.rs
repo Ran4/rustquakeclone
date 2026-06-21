@@ -459,6 +459,8 @@ fn init_gfx(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>,
     gfx.unit_cube = meshes.add(Cuboid::from_size(Vec3::ONE));
     gfx.sphere = meshes.add(Sphere::new(0.5));
     gfx.small_sphere = meshes.add(Sphere::new(0.12));
+    gfx.cylinder = meshes.add(Cylinder { radius: 0.5, half_height: 0.5 });
+    gfx.cone = meshes.add(Cone { radius: 0.5, height: 1.0 });
     let unlit = |m: &mut Assets<StandardMaterial>, c: Color, e: LinearRgba| {
         m.add(StandardMaterial { base_color: c, emissive: e, unlit: false, ..default() })
     };

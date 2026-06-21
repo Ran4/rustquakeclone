@@ -14,5 +14,5 @@
 
     // Which level a fresh run starts on: a number 1-7 (default 1), or "random".
     // Finishing a level still carries you into the next one regardless.
-    start_level: "2",
+    start_level: "6",
 )

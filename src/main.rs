@@ -14,6 +14,7 @@ mod enemies;
 mod gallery;
 mod gamestate;
 mod hud;
+mod itemshot;
 mod level;
 mod levels;
 mod levelshot;
@@ -51,7 +52,8 @@ fn main() {
     let assets = assets_dir();
     let gallery = std::env::var("QC_GALLERY").is_ok();
     let levelshot = std::env::var("QC_LEVELSHOT").is_ok();
-    let preview = gallery || levelshot; // debug screenshot modes: small window, fast saves
+    let itemshot = std::env::var("QC_ITEMSHOT").is_ok();
+    let preview = gallery || levelshot || itemshot; // debug screenshot modes: small window, fast saves
     let cfg = config::Config::load();
     // Synthesize the SFX set into <assets>/sounds/ before the engine starts so
     // the AssetServer (pointed at the same dir) can load them.
@@ -141,6 +143,9 @@ fn main() {
     } else if levelshot {
         app.add_systems(OnEnter(GameState::Playing), (weapons::create_weapon_vis, levelshot::setup))
             .add_systems(Update, levelshot::tick.run_if(in_state(GameState::Playing)));
+    } else if itemshot {
+        app.add_systems(OnEnter(GameState::Playing), (weapons::create_weapon_vis, itemshot::setup))
+            .add_systems(Update, itemshot::tick.run_if(in_state(GameState::Playing)));
     } else {
         app.add_plugins(hud::HudPlugin).add_systems(
             OnEnter(GameState::Playing),

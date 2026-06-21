@@ -252,7 +252,50 @@ MONSTERS: list[Image] = [
           "blued metal with etched runes, no lighting.", resize=None),
 ]
 
-MANIFEST: list[Image] = WORLD + THEMES + MONSTERS
+# Weapon-material albedo maps. The ground-pickup weapon models and the
+# first-person view-models are skinned with these by material role (not one per
+# weapon): receivers/barrels/stocks pick gunmetal, brass, steel or wood, while
+# the painted body sheet is tinted (green/red/blue) per weapon at material build
+# time — so it must stay a light, even mid-grey so the tint reads true.
+WEAPONS: list[Image] = [
+    Image(
+        "textures/weapons/gunmetal.png",
+        SEAMLESS
+        + "Dark-fantasy Quake-style weapon material: blued gunmetal steel, "
+        "brushed dark panels with rivets and scratched edge wear, faint grime "
+        "in the seams, muted neutral grey-blue, matte.",
+    ),
+    Image(
+        "textures/weapons/brass.png",
+        SEAMLESS
+        + "Dark-fantasy Quake-style weapon material: aged polished brass and "
+        "bronze gun-barrel metal, warm golden hue with darker patina, fine "
+        "scratches and tarnish.",
+    ),
+    Image(
+        "textures/weapons/steel.png",
+        SEAMLESS
+        + "Dark-fantasy Quake-style weapon material: bright brushed stainless "
+        "steel, fine parallel grain, cold light grey, clean with a few "
+        "scratches.",
+    ),
+    Image(
+        "textures/weapons/wood.png",
+        SEAMLESS
+        + "Dark-fantasy Quake-style weapon material: dark varnished walnut "
+        "gunstock wood, fine straight grain, deep warm brown, subtle sheen.",
+    ),
+    Image(
+        "textures/weapons/painted.png",
+        SEAMLESS
+        + "Dark-fantasy Quake-style weapon material: even light neutral grey "
+        "matte painted military metal, uniform mid-tone with subtle chips, "
+        "scuffs and scratches revealing darker metal beneath, no strong color "
+        "so it can be tinted.",
+    ),
+]
+
+MANIFEST: list[Image] = WORLD + THEMES + MONSTERS + WEAPONS
 
 
 def load_env_key() -> str | None:

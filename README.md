@@ -108,6 +108,12 @@ trim, metal, door and lava use seamless tiling textures in `assets/textures/worl
 emitted as its own mesh with **world-aligned UVs** (uniform texel density, so the tiling lines up
 between adjacent brushes), and the textures load with a repeat sampler.
 
+The weapons are skinned too: a small set of material albedos in `assets/textures/weapons/`
+(gunmetal, brass, steel, wood and a tintable painted sheet) skins both the ground-pickup gun models
+and the first-person view-models by material role — receivers/barrels/stocks pick the matching
+metal or wood, while the green/red/blue gun bodies tint the neutral painted sheet. Ammo, health,
+armor and the key stay flat-shaded so the glowing accents read at a glance.
+
 ### Generating images
 
 All textures are produced by one idempotent script — the single registry of every image the game
@@ -148,7 +154,8 @@ to introduce a new texture; delete a PNG to regenerate it.
 | `enemies.rs` | Monster spawning + AI state machine + attacks |
 | `monster_model.rs` | Procedural skeletal monster rigs, textures, bone animation + death topple |
 | `gallery.rs` | `QC_GALLERY=1` debug mode: render each monster solo and screenshot it |
-| `pickups.rs` | Health, armor, ammo, weapons, key |
+| `itemshot.rs` | `QC_ITEMSHOT=1` debug mode: render each pickup solo and screenshot it |
+| `pickups.rs` | Health, armor, ammo, weapons, key (every pickup is a little hand-built low-poly model) |
 | `level.rs` | Themed material palettes, the `Build` level-authoring API, level registry + dispatch |
 | `levels/` | One module per level (`level1`..`level7`) — each a `build(&mut Build)` map |
 | `levelshot.rs` | `QC_LEVELSHOT=1` debug mode: build each level and screenshot its entry view |
@@ -167,6 +174,9 @@ fires while logging position/health) — handy for headless validation.
 
 Run `QC_GALLERY=1 cargo run` to spawn each monster in turn, lit and centered, and save a close-up
 `gallery_<n>_<kind>.png` of every model — handy for eyeballing the rigs and textures.
+
+Run `QC_ITEMSHOT=1 cargo run` to render each pickup in turn, lit and centered, and save a close-up
+`itemshot_<n>_<name>.png` of every model — handy for eyeballing the pickup props.
 
 Run `QC_LEVELSHOT=1 cargo run` to build each level in turn and save `levelshot_<n>_<name>.png` from
 the player's entry vantage — handy for eyeballing every level's geometry, textures and lighting.

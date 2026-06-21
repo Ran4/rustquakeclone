@@ -375,6 +375,10 @@ pub struct GfxAssets {
     pub unit_cube: Handle<Mesh>,
     pub sphere: Handle<Mesh>,
     pub small_sphere: Handle<Mesh>,
+    /// Unit cylinder (radius 0.5, height 1, axis +Y) — barrels, shells, batteries.
+    pub cylinder: Handle<Mesh>,
+    /// Unit cone (radius 0.5, height 1, apex +Y) — warheads, nails, muzzle spikes.
+    pub cone: Handle<Mesh>,
     pub white_unlit: Handle<StandardMaterial>,
     pub blood: Handle<StandardMaterial>,
     pub gib: Handle<StandardMaterial>,

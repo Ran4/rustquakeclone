@@ -21,6 +21,33 @@ impl Plugin for WeaponsPlugin {
     }
 }
 
+/// A weapon-material albedo skin, keyed by material role rather than by weapon —
+/// a handful of textures skin every part of every gun (and the first-person
+/// view-models). `Painted` is a neutral grey sheet meant to be tinted per weapon
+/// (green grenade launcher, red rocket launcher, blue lightning gun, …). The
+/// handles are pulled straight from the `AssetServer` at point of use (it dedupes
+/// by path), which sidesteps any startup-vs-OnEnter load ordering. Primitive
+/// meshes carry 0..1 UVs, so the default (clamp) sampler is correct.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum WeaponTex {
+    Gunmetal,
+    Brass,
+    Steel,
+    Wood,
+    Painted,
+}
+impl WeaponTex {
+    pub fn file(self) -> &'static str {
+        match self {
+            WeaponTex::Gunmetal => "textures/weapons/gunmetal.png",
+            WeaponTex::Brass => "textures/weapons/brass.png",
+            WeaponTex::Steel => "textures/weapons/steel.png",
+            WeaponTex::Wood => "textures/weapons/wood.png",
+            WeaponTex::Painted => "textures/weapons/painted.png",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WeaponKind {
     Shotgun,
@@ -133,22 +160,35 @@ pub struct WeaponVis {
 pub fn create_weapon_vis(
     mut commands: Commands,
     existing: Option<Res<WeaponVis>>,
+    asset_server: Res<AssetServer>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if existing.is_some() {
         return;
     }
-    let mut mat = |c: Color, e: LinearRgba| {
-        materials.add(StandardMaterial { base_color: c, emissive: e, perceptual_roughness: 0.4, metallic: 0.6, ..default() })
+    // Skin each view-model with a weapon material. Natural materials use a WHITE
+    // base so the texture shows true; the painted sheet is tinted per weapon
+    // (base_color multiplies the texture). Emissive stays as the glow accent.
+    let mut mat = |tex: WeaponTex, c: Color, e: LinearRgba| {
+        materials.add(StandardMaterial {
+            base_color: c,
+            base_color_texture: Some(asset_server.load(tex.file())),
+            emissive: e,
+            perceptual_roughness: 0.4,
+            metallic: 0.6,
+            ..default()
+        })
     };
+    use WeaponTex::*;
+    let w = Color::WHITE;
     let mats = vec![
-        mat(rgb(0.30, 0.30, 0.33), LinearRgba::BLACK),  // shotgun
-        mat(rgb(0.22, 0.22, 0.24), LinearRgba::BLACK),  // ssg
-        mat(rgb(0.40, 0.42, 0.48), LinearRgba::BLACK),  // nailgun
-        mat(rgb(0.25, 0.45, 0.2), LinearRgba::rgb(0.05, 0.2, 0.02)), // grenade
-        mat(rgb(0.5, 0.18, 0.12), LinearRgba::rgb(0.3, 0.05, 0.0)),  // rocket
-        mat(rgb(0.3, 0.45, 0.7), LinearRgba::rgb(0.2, 0.6, 1.5)),    // lightning
-        mat(rgb(0.30, 0.18, 0.10), LinearRgba::rgb(0.04, 0.01, 0.0)),// whip (coiled leather)
+        mat(Gunmetal, w, LinearRgba::BLACK),                                   // shotgun
+        mat(Brass, w, LinearRgba::BLACK),                                      // ssg
+        mat(Steel, w, LinearRgba::BLACK),                                      // nailgun
+        mat(Painted, rgb(0.3, 0.55, 0.22), LinearRgba::rgb(0.05, 0.2, 0.02)),  // grenade
+        mat(Painted, rgb(0.6, 0.2, 0.14), LinearRgba::rgb(0.3, 0.05, 0.0)),    // rocket
+        mat(Painted, rgb(0.35, 0.5, 0.8), LinearRgba::rgb(0.2, 0.6, 1.5)),     // lightning
+        mat(Wood, w, LinearRgba::rgb(0.04, 0.01, 0.0)),                        // whip (leather)
     ];
     let scales = vec![
         Vec3::new(0.14, 0.14, 0.6),
