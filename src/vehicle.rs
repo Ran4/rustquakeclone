@@ -50,6 +50,14 @@ const TURN_RATE: f32 = 1.5; // rad/s of yaw at full steering authority
 const TURN_REF: f32 = 7.0; // speed (m/s) at which steering reaches full authority
 const STEP: f32 = 0.4; // step-up for the truck body (cross small seams, not rails)
 
+// -- crash physics -----------------------------------------------------------
+const GRIP: f32 = 7.0; // 1/s: how fast sideways (lateral) slide bleeds off — high = tracks heading, low = drifty
+const REST: f32 = 0.45; // restitution: fraction of the head-on impact speed rebounded out of a wall
+const SPIN_GAIN: f32 = 0.07; // rad/s of yaw spin imparted per (m/s of impact × off-axis factor)
+const SPIN_DECAY: f32 = 2.5; // 1/s: how fast a collision spin winds down
+const MAX_SPIN: f32 = 3.5; // rad/s cap on collision spin
+const BONK_SPEED: f32 = 8.0; // impact speed (m/s) above which a crash plays a sound
+
 /// Which vehicle the player is currently driving (`None` = on foot). A resource
 /// rather than a marker component so `player_move` and `vehicle_drive` both see
 /// the change the same frame, with no command-buffer latency.
@@ -61,10 +69,12 @@ pub struct ActiveVehicle(pub Option<Entity>);
 #[derive(Component)]
 pub struct Vehicle {
     pub yaw: f32,
-    /// Signed forward speed (negative = reversing).
-    pub speed: f32,
-    /// Vertical velocity (gravity / settling).
-    pub vy: f32,
+    /// Full world velocity (x/z = planar drift + rebound, y = gravity/settling).
+    /// A real vector — not a forward-only scalar — so a wall can bounce it any
+    /// direction and the truck keeps that momentum until grip realigns it.
+    pub vel: Vec3,
+    /// Angular velocity about +Y (rad/s): collision-induced spin that decays.
+    pub yaw_rate: f32,
     /// Index of this vehicle's slot in `WorldColliders.solids`.
     pub collider: usize,
     /// World translation applied this frame, consumed by the rider carry.
@@ -145,6 +155,38 @@ fn ride(rider: Vec3, half_y: f32, t: Vec3, yaw: f32, delta: Vec3, dyaw: f32) -> 
 fn coast(speed: f32, dt: f32) -> f32 {
     let d = DRAG * dt;
     if speed > 0.0 { (speed - d).max(0.0) } else { (speed + d).min(0.0) }
+}
+
+/// Horizontal unit forward vector for a heading (local -Z, matching the player).
+fn forward(yaw: f32) -> Vec3 {
+    Vec3::new(-yaw.sin(), 0.0, -yaw.cos())
+}
+
+/// Crash response off a wall. `drive_planar` is the truck's intended planar
+/// velocity this frame, `fwd` its heading, `slid_planar` the tangential leftover
+/// the swept solver kept after clipping the into-wall component, and `wall_normal`
+/// the (un-normalized) summed outward normal the solver reports. Returns the
+/// post-crash planar velocity (slide + restitution rebound), the yaw-spin impulse
+/// to fold into the angular velocity, and the head-on impact speed (0 = no real
+/// collision, e.g. already moving away from the wall).
+fn crash_response(drive_planar: Vec3, fwd: Vec3, slid_planar: Vec3, wall_normal: Vec3) -> (Vec3, f32, f32) {
+    let n = Vec3::new(wall_normal.x, 0.0, wall_normal.z);
+    if n.length_squared() <= 1e-6 {
+        return (slid_planar, 0.0, 0.0);
+    }
+    let n = n.normalize();
+    let into = drive_planar.dot(n); // < 0 when driving into the wall
+    if into >= 0.0 {
+        return (slid_planar, 0.0, 0.0);
+    }
+    let impact = -into;
+    // Restitution: rebound back out along the wall normal.
+    let out_planar = slid_planar + n * (impact * REST);
+    // Off-axis hit spins the truck toward the way it scrapes along the wall — the
+    // cross sign rotates the heading into the slide direction.
+    let slide_dir = (drive_planar - n * into).normalize_or_zero();
+    let dyaw_rate = SPIN_GAIN * impact * fwd.cross(slide_dir).y;
+    (out_planar, dyaw_rate, impact)
 }
 
 // ----------------------------------------------------------------------------
@@ -230,7 +272,7 @@ pub fn spawn_truck(
         .spawn((
             Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw)),
             Visibility::default(),
-            Vehicle { yaw, speed: 0.0, vy: 0.0, collider, last_delta: Vec3::ZERO, last_dyaw: 0.0 },
+            Vehicle { yaw, vel: Vec3::ZERO, yaw_rate: 0.0, collider, last_delta: Vec3::ZERO, last_dyaw: 0.0 },
             LevelEntity,
             Name::new("Truck"),
         ))
@@ -285,6 +327,7 @@ fn vehicle_drive(
     active: Res<ActiveVehicle>,
     mut colliders: ResMut<WorldColliders>,
     mut q: Query<(Entity, &mut Transform, &mut Vehicle)>,
+    mut sfx: MessageWriter<Sfx>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -292,21 +335,31 @@ fn vehicle_drive(
     }
     for (e, mut tf, mut v) in &mut q {
         let driving = active.0 == Some(e);
-        let mut speed = v.speed;
-        let mut yaw = v.yaw;
 
+        // --- driving in the heading frame ----------------------------------
+        // Split the planar velocity into forward (along heading) and lateral
+        // (sideways) parts. Throttle/brake/drag act on the forward part; the
+        // lateral part is the slide/drift, which tire grip bleeds away so the
+        // truck normally tracks where it points — but a fresh crash impulse
+        // survives a moment as a recoil/skid before grip pulls it back in line.
+        let fwd0 = forward(v.yaw);
+        let planar0 = Vec3::new(v.vel.x, 0.0, v.vel.z);
+        let mut fs = planar0.dot(fwd0);
+        let lateral = (planar0 - fwd0 * fs) * (-GRIP * dt).exp();
+
+        let mut yaw = v.yaw;
         if driving {
             let mut throttle = false;
             if keys.pressed(KeyCode::KeyW) {
-                speed += ACCEL * dt;
+                fs += ACCEL * dt;
                 throttle = true;
             }
             if keys.pressed(KeyCode::KeyS) {
-                speed -= BRAKE * dt;
+                fs -= BRAKE * dt;
                 throttle = true;
             }
             if !throttle {
-                speed = coast(speed, dt);
+                fs = coast(fs, dt);
             }
             // Steering authority scales with (signed) speed: no turning while
             // stopped, and reversing flips the turn direction like a real car.
@@ -317,18 +370,25 @@ fn vehicle_drive(
             if keys.pressed(KeyCode::KeyD) {
                 steer -= 1.0;
             }
-            yaw += steer * TURN_RATE * dt * (speed / TURN_REF).clamp(-1.0, 1.0);
+            yaw += steer * TURN_RATE * dt * (fs / TURN_REF).clamp(-1.0, 1.0);
         } else {
-            speed = coast(speed, dt);
+            fs = coast(fs, dt);
         }
-        speed = speed.clamp(-MAX_REVERSE, MAX_SPEED);
+        fs = fs.clamp(-MAX_REVERSE, MAX_SPEED);
 
-        let vy = v.vy - GRAVITY * dt;
-        let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-        let vel = fwd * speed + Vec3::Y * vy;
+        // Integrate the collision spin onto the heading, then wind it down.
+        yaw += v.yaw_rate * dt;
+        let mut yaw_rate = v.yaw_rate * (-SPIN_DECAY * dt).exp();
 
-        // Sweep the footprint, excluding this truck's own slot so it can't
-        // collide with itself.
+        // Recompose the world velocity around the (now steered + spun) heading:
+        // forward thrust along the new heading plus whatever lateral slide grip
+        // left behind. Gravity rides in y.
+        let fwd = forward(yaw);
+        let drive_planar = fwd * fs + lateral;
+        let vy = v.vel.y - GRAVITY * dt;
+        let vel = Vec3::new(drive_planar.x, vy, drive_planar.z);
+
+        // --- sweep the footprint (excluding our own slot) ------------------
         let old_t = tf.translation;
         let h = footprint_half(yaw);
         let half = Vec3::new(h.x, BODY_H * 0.5, h.y);
@@ -339,17 +399,28 @@ fn vehicle_drive(
         let res = move_and_slide(center, half, vel, dt, &colliders.solids, STEP);
         let new_t = Vec3::new(res.pos.x, res.pos.y - BODY_H * 0.5, res.pos.z);
 
-        // Bleed off speed when a wall stops the truck; zero vy on the ground.
-        let resolved_speed = Vec3::new(res.vel.x, 0.0, res.vel.z).dot(fwd);
-        let resolved_vy = if res.on_ground { 0.0 } else { res.vel.y };
+        // The slide already stripped the into-wall component, leaving the
+        // tangential slide. Add the rebound + spin of a crash on top.
+        let slid_planar = Vec3::new(res.vel.x, 0.0, res.vel.z);
+        let (out_planar, dyaw_rate, impact) = if res.hit_wall {
+            crash_response(drive_planar, fwd, slid_planar, res.wall_normal)
+        } else {
+            (slid_planar, 0.0, 0.0)
+        };
+        yaw_rate = (yaw_rate + dyaw_rate).clamp(-MAX_SPIN, MAX_SPIN);
+        if impact > BONK_SPEED {
+            sfx.write(Sfx::at(Sound::Impact, new_t));
+        }
+
+        let out_vy = if res.on_ground { 0.0 } else { res.vel.y };
 
         tf.translation = new_t;
         tf.rotation = Quat::from_rotation_y(yaw);
         v.last_delta = new_t - old_t;
         v.last_dyaw = yaw - v.yaw;
         v.yaw = yaw;
-        v.speed = resolved_speed;
-        v.vy = resolved_vy;
+        v.vel = Vec3::new(out_planar.x, out_vy, out_planar.z);
+        v.yaw_rate = yaw_rate;
 
         if let Some(slot) = colliders.solids.get_mut(v.collider) {
             *slot = footprint_aabb(new_t, yaw);
@@ -384,5 +455,56 @@ fn vehicle_carry(
                 etf.translation = np;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The swept solver reports an OUTWARD wall normal (points from the wall back
+    // toward the truck). A front wall the truck drives -Z into therefore reports
+    // +Z; a wall on the truck's right (+X) reports -X.
+
+    /// A head-on crash rebounds the truck back out of the wall and barely spins it.
+    #[test]
+    fn head_on_bounces_back_without_spinning() {
+        let fwd = forward(0.0); // (0,0,-1)
+        let drive = fwd * 20.0; // driving straight into a front wall
+        let wall_n = Vec3::Z; // front wall's outward normal
+        let slid = Vec3::ZERO; // solver clipped all forward motion
+        let (out, dyaw, impact) = crash_response(drive, fwd, slid, wall_n);
+        assert!((impact - 20.0).abs() < 1e-3, "impact = closing speed");
+        assert!(out.z > 0.0, "velocity must rebound back out of the wall (+Z), got {out:?}");
+        assert!((out.z - 20.0 * REST).abs() < 1e-3, "rebound = impact * restitution");
+        assert!(dyaw.abs() < 1e-3, "a square head-on hit has no preferred spin, got {dyaw}");
+    }
+
+    /// A glancing hit spins the truck toward the direction it scrapes along the
+    /// wall: nosing forward-and-right into a front wall turns it right (yaw < 0).
+    #[test]
+    fn glancing_hit_spins_toward_the_slide() {
+        let fwd = forward(0.0); // (0,0,-1)
+        let drive = Vec3::new(4.0, 0.0, -12.0); // forward and to the right (+X)
+        let wall_n = Vec3::Z; // front wall
+        let slid = Vec3::new(4.0, 0.0, 0.0); // solver keeps the +X tangential slide
+        let (out, dyaw, impact) = crash_response(drive, fwd, slid, wall_n);
+        assert!(impact > 0.0);
+        assert!(out.x > 0.0, "keeps sliding to the right along the wall");
+        assert!(dyaw < 0.0, "right-ward scrape turns the nose right (yaw decreases), got {dyaw}");
+    }
+
+    /// Driving parallel to / away from a wall the solver still flags is not a
+    /// crash: no rebound, no spin.
+    #[test]
+    fn no_response_when_not_driving_into_the_wall() {
+        let fwd = forward(0.0);
+        let drive = Vec3::new(0.0, 0.0, -10.0); // moving along the wall, not into it
+        let wall_n = Vec3::X; // wall on the left, normal points right toward us
+        let slid = drive;
+        let (out, dyaw, impact) = crash_response(drive, fwd, slid, wall_n);
+        assert_eq!(impact, 0.0);
+        assert_eq!(dyaw, 0.0);
+        assert!((out - drive).length() < 1e-6);
     }
 }

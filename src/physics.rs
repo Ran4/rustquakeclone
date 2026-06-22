@@ -160,6 +160,10 @@ pub struct MoveResult {
     pub vel: Vec3,
     pub on_ground: bool,
     pub hit_wall: bool,
+    /// Summed outward normal of the wall(s) hit during the slide (points from the
+    /// wall back toward the mover), or zero if no wall was hit. Normalize before
+    /// use. Lets a caller bounce/spin off a surface instead of just sliding.
+    pub wall_normal: Vec3,
 }
 
 /// Push `pos` (centre of an AABB with half-extents `half`) out of any solid it
@@ -236,7 +240,7 @@ pub fn move_and_slide(
     let pos = depenetrate(pos, half, solids);
 
     // Plain velocity-clipping slide of the full motion.
-    let (p1, v1, wall, _floor) = slide_move(pos, half, vel, dt, solids);
+    let (p1, v1, wall, _floor, wall_n) = slide_move(pos, half, vel, dt, solids);
 
     let mut out_pos = p1;
     let mut out_vel = v1;
@@ -264,23 +268,25 @@ pub fn move_and_slide(
         out_vel.y = 0.0;
     }
 
-    MoveResult { pos: out_pos, vel: out_vel, on_ground, hit_wall: wall }
+    MoveResult { pos: out_pos, vel: out_vel, on_ground, hit_wall: wall, wall_normal: wall_n }
 }
 
 /// Velocity-threading slide: integrates `vel` over `dt`, clipping the velocity
-/// against each surface it hits. Returns (pos, clipped_vel, hit_wall, hit_floor).
+/// against each surface it hits. Returns
+/// (pos, clipped_vel, hit_wall, hit_floor, summed_wall_normal).
 fn slide_move(
     pos: Vec3,
     half: Vec3,
     vel: Vec3,
     dt: f32,
     solids: &[Aabb],
-) -> (Vec3, Vec3, bool, bool) {
+) -> (Vec3, Vec3, bool, bool, Vec3) {
     let mut cur = pos;
     let mut velocity = vel;
     let mut time_left = dt;
     let mut hit_wall = false;
     let mut hit_floor = false;
+    let mut wall_normal = Vec3::ZERO;
 
     for _ in 0..4 {
         if time_left <= 1e-6 {
@@ -319,6 +325,7 @@ fn slide_move(
             // ceiling
         } else {
             hit_wall = true;
+            wall_normal += best_n;
         }
         // Clip velocity onto the surface plane (project out the normal component).
         let into = velocity.dot(best_n);
@@ -326,7 +333,7 @@ fn slide_move(
             velocity -= best_n * into;
         }
     }
-    (cur, velocity, hit_wall, hit_floor)
+    (cur, velocity, hit_wall, hit_floor, wall_normal)
 }
 
 /// Pure positional slide of a displacement `disp` (used for step probes and the
