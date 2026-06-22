@@ -273,11 +273,17 @@ fn player_move(
         }
     }
 
+    // Hold Shift to run: a flat speed-up of the ground movement (no stamina).
+    let run = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let run_mul = if run { RUN_MULTIPLIER } else { 1.0 };
+
     // Accelerate toward wishdir (ground vs air-cap gives strafe-jumping feel).
+    // Run also scales AIR_ACCEL — snappier air control toward the same AIR_CAP
+    // ceiling, so the air-strafe skill curve is preserved, just quicker.
     let (accel, wishspeed) = if p.on_ground {
-        (GROUND_ACCEL, MAX_GROUND_SPEED)
+        (GROUND_ACCEL * run_mul, MAX_GROUND_SPEED * run_mul)
     } else {
-        (AIR_ACCEL, AIR_CAP)
+        (AIR_ACCEL * run_mul, AIR_CAP)
     };
     vel = accelerate(vel, wishdir, wishspeed, accel, dt);
 

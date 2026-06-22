@@ -11,6 +11,9 @@ use crate::physics::Aabb;
 pub mod tune {
     pub const GRAVITY: f32 = 26.0;
     pub const MAX_GROUND_SPEED: f32 = 9.0;
+    /// Hold Shift to run: scales ground wish-speed (and accel, so the higher
+    /// cap is still reached promptly). No stamina — just a flat multiplier.
+    pub const RUN_MULTIPLIER: f32 = 4.0;
     pub const GROUND_ACCEL: f32 = 11.0;
     pub const AIR_ACCEL: f32 = 11.0;
     /// Air wish-speed cap — the classic Quake value that enables air-strafing.
