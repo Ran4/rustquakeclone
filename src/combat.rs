@@ -10,7 +10,7 @@ impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (handle_explosions, apply_damage, check_deaths)
+            (handle_explosions, apply_damage, crate::monster_model::do_sever, check_deaths)
                 .chain()
                 .run_if(in_state(GameState::Playing)),
         );
@@ -21,9 +21,10 @@ impl Plugin for CombatPlugin {
 /// Player explosions hit everyone in range — including the firer, who is hurled
 /// by the blast (a rocket/grenade jump) for reduced self-damage. Monster
 /// explosions never hurt the firer or other monsters (no friendly fire).
-fn handle_explosions(
+pub(crate) fn handle_explosions(
     mut explosions: MessageReader<ExplosionEvent>,
     targets: Query<(Entity, &GlobalTransform, &Hurtbox, &Faction), With<Health>>,
+    limb_boxes: Res<LimbBoxes>,
     mut damage: MessageWriter<DamageEvent>,
 ) {
     for ex in explosions.read() {
@@ -44,14 +45,38 @@ fn handle_explosions(
             // The firer is launched by their own blast (rocket/grenade jump), but
             // takes only half self-damage so a single jump isn't lethal.
             let dmg_scale = if self_blast { 0.5 } else { 1.0 };
-            damage.write(DamageEvent {
-                target: e,
-                amount: ex.damage * falloff * dmg_scale,
-                source: ex.source,
-                knockback: dir * ex.push * falloff + Vec3::Y * ex.push * 0.25 * falloff,
-            });
+            let kb = dir * ex.push * falloff + Vec3::Y * ex.push * 0.25 * falloff;
+            damage.write(DamageEvent::body(e, ex.damage * falloff * dmg_scale, ex.source, kb));
+
+            // A PLAYER blast also chips one limb (half value) so a rocket can finish
+            // a limb you'd already chewed — the limb it struck directly if any, else
+            // the nearest live limb. Body-level only; no per-bone splash raycasts.
+            if ex.from_player && *faction == Faction::Monster {
+                let limb = match ex.direct_limb {
+                    Some((de, g)) if de == e => Some(g),
+                    _ => nearest_limb_of(e, ex.pos, &limb_boxes),
+                };
+                if let Some(g) = limb {
+                    damage.write(DamageEvent::limb(e, ex.damage * falloff * 0.5, ex.source, kb, g));
+                }
+            }
         }
     }
+}
+
+/// The live limb group of `e` whose box centre is nearest `pos` (for splash routing).
+fn nearest_limb_of(e: Entity, pos: Vec3, boxes: &LimbBoxes) -> Option<LimbGroup> {
+    let mut best: Option<(f32, LimbGroup)> = None;
+    for &(be, g, bb) in &boxes.boxes {
+        if be != e {
+            continue;
+        }
+        let d = bb.center().distance(pos);
+        if best.map_or(true, |(bd, _)| d < bd) {
+            best = Some((d, g));
+        }
+    }
+    best.map(|(_, g)| g)
 }
 
 #[allow(clippy::type_complexity)]
@@ -65,6 +90,8 @@ fn apply_damage(
         &GlobalTransform,
     )>,
     mut enemies: Query<&mut crate::enemies::Enemy>,
+    mut limbq: Query<&mut crate::monster_model::Limbs>,
+    mut sever_w: MessageWriter<SeverEvent>,
     mut sfx: MessageWriter<Sfx>,
     mut flash: MessageWriter<ScreenFlash>,
 ) {
@@ -75,6 +102,7 @@ fn apply_damage(
         if hp.dead {
             continue;
         }
+        let en_kind = enemies.get(ev.target).ok().map(|e| e.kind);
         let mut dmg = ev.amount.max(0.0);
         if let Some(mut a) = armor {
             if a.points > 0.0 && a.absorb > 0.0 {
@@ -103,6 +131,41 @@ fn apply_damage(
                         en.windup = 0.0; // a hit interrupts a pending shot
                         let pitch = crate::enemies::kind_pitch(en.kind);
                         sfx.write(Sfx::pitched(Sound::EnemyPain, pos, pitch));
+                    }
+                }
+            }
+        }
+
+        // Limb-targeted hits also pour into the limb's sever pool. When it empties,
+        // sever the limb (a Head sever kills a normal outright / chunks a boss).
+        if let Some(g) = ev.limb {
+            if let Ok(mut limbs_mut) = limbq.get_mut(ev.target) {
+                let limbs = &mut *limbs_mut;
+                let gi = g.idx();
+                let max = limbs.max[gi];
+                if max > 0.0 && !limbs.severed[gi] {
+                    let severed_now = crate::monster_model::accrue(
+                        &mut limbs.taken[gi],
+                        max,
+                        &mut limbs.severed[gi],
+                        ev.amount.max(0.0),
+                    );
+                    if severed_now {
+                        if g == LimbGroup::Head {
+                            use crate::level::MonsterKind::*;
+                            let boss = matches!(en_kind, Some(Ogre) | Some(DeathKnight));
+                            if boss {
+                                hp.current -= 120.0; // big chunk, not an instant decap
+                            } else {
+                                hp.current = hp.current.min(-30.0); // force the overkill gib
+                            }
+                        }
+                        sever_w.write(SeverEvent {
+                            root: ev.target,
+                            limb: g,
+                            at: pos,
+                            dir: ev.knockback.normalize_or_zero(),
+                        });
                     }
                 }
             }

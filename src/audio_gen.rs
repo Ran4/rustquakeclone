@@ -338,6 +338,36 @@ fn whip() -> Vec<f32> {
     b.finish(0.8)
 }
 
+fn rope_taut() -> Vec<f32> {
+    // Taut-cable tension: two close low tones beating slowly + a faint fiber
+    // creak, no hard transient so the loop point is seamless (~1.5s).
+    let mut b = Buf::secs(1.5);
+    let n = b.s.len();
+    let mut rng = Rng::new(0x2099);
+    let mut lp = 0.0f32;
+    for i in 0..n {
+        let t = i as f32 / SR as f32;
+        let hum = (TAU * 90.0 * t).sin() * 0.5
+            + (TAU * 91.0 * t).sin() * 0.3
+            + (TAU * 270.0 * t).sin() * 0.08; // creak overtone
+        let w = rng.next_f32();
+        lp += 0.03 * (w - lp); // fiber rasp
+        let wobble = 0.75 + 0.25 * (TAU * 0.8 * t).sin();
+        b.s[i] = (hum + lp * 0.15) * wobble;
+    }
+    b.finish(0.45)
+}
+
+fn sever() -> Vec<f32> {
+    // A limb torn off: a meaty low thud, a wet tearing rasp, and a sharp bone crack.
+    let mut b = Buf::secs(0.35);
+    b.sine_sweep(180.0, 40.0, 0.7, 18.0); // meaty thud
+    b.noise(0.5, 9.0, 0.25, 0x5e11); // wet tear
+    b.sine_sweep(900.0, 300.0, 0.25, 40.0); // bone-crack tick
+    b.attack(0.002);
+    b.finish(0.9)
+}
+
 fn ambient() -> Vec<f32> {
     // low, slowly-beating drone, loopable (~3s)
     let mut b = Buf::secs(3.0);
@@ -385,6 +415,8 @@ fn table() -> Vec<(&'static str, fn() -> Vec<f32>)> {
         ("ambient.wav", ambient),
         ("lightning.wav", lightning),
         ("whip.wav", whip),
+        ("rope_taut.wav", rope_taut),
+        ("sever.wav", sever),
     ]
 }
 

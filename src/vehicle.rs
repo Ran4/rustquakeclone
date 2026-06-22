@@ -344,7 +344,7 @@ pub fn spawn_truck(
 // ----------------------------------------------------------------------------
 /// Press **E**: mount the vehicle whose driver spot you're standing on, or
 /// dismount the one you're driving.
-fn vehicle_activate(
+pub(crate) fn vehicle_activate(
     keys: Res<ButtonInput<KeyCode>>,
     mut active: ResMut<ActiveVehicle>,
     q_player: Query<&Transform, With<Player>>,
@@ -553,7 +553,7 @@ fn vehicle_ram(
             en.ram_cd = RAM_CD;
             let amount = (speed * 2.0).clamp(15.0, 90.0);
             let knockback = dir * (speed * 0.6).clamp(7.0, 24.0) + Vec3::Y * 5.0;
-            dmg.write(DamageEvent { target: e, amount, source: None, knockback });
+            dmg.write(DamageEvent::body(e, amount, None, knockback));
             sfx.write(Sfx::at(Sound::RamHit, etf.translation));
         }
     }

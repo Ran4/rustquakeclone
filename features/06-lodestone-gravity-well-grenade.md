@@ -1,0 +1,15 @@
+# 06. The Lodestone — Gravity-Well Grenade
+
+> Lob a grenade that doesn't explode outward — it implodes inward, dragging every monster and stray projectile into a single screaming knot for one rocket to pulp.
+
+**The idea** — A right-click on the Grenade Launcher arms a *Lodestone*: a grenade that bounces and settles like the normal one, but instead of detonating once, it spends its two-second fuse as a gravity well. Every frame it emits an inverted blast — the same radius falloff as a rocket, but the push is *negative*, so everything inside is hauled toward the grenade instead of flung away. Grunts, Scrags and even a charging Knight get reeled into a tight pile; loose grenades and enemy bolts curve in too. When the fuse expires it pops with a small real blast. The play is the setup: pull a room into one knot, then put a rocket through the middle for a single pile-gib.
+
+**Why it's fresh** — Quake taught a generation to *spread* enemies with splash. The Lodestone inverts the verb entirely: it's a crowd-*compressor*, a vacuum that rewards the opposite of kiting. It also pulls *projectiles*, so a fired-back grenade or an Enforcer volley becomes ammunition for your trap. Nothing in the arsenal currently moves the battlefield toward a point.
+
+**How it plays** — A new rhythm: bait a group, bank a Lodestone behind them, watch the rig-driven monsters get dragged kicking into a heap, then swap to the Rocket Launcher and uncork. Mistime it and you've politely gathered six monsters onto your own face. It rewards lobbing-into-clusters aim and weapon-swap tempo, and pairs viciously with the rocket-jump and the Whip's shove for repositioning the well itself.
+
+**How it fits QUAKECLONE** — It's almost entirely *reuse*. `projectiles.rs` already gives grenades a fuse, bounce and world raycast; the Lodestone just writes an `ExplosionEvent` (`common.rs`) every frame with a negative `push`. `combat.rs::handle_explosions` already computes `dir * push * falloff` and feeds the `Knockback` component that the movement systems in `physics.rs` consume — flip the sign and the math pulls inward for free. Monsters topple in via their `monster_model.rs` rigs; the alt-fire slot hangs off `weapons.rs`; a low hum loops from `audio_gen.rs`.
+
+**Build sketch** — Add an alt-fire branch in `weapons.rs` that spawns a grenade flagged `lodestone`. In `projectile_move`, when that flag is set and the fuse is live, emit a per-frame inverted `ExplosionEvent` with zero damage and negative push, then a normal pop on expiry. The hard part is *stability*: an every-frame pull toward a point makes light entities jitter or orbit. Clamp the inward impulse near the centre, cap the gathered velocity, and tune falloff so monsters settle into a clump instead of slingshotting through it — plus a self-pull guard so the firer isn't yanked along.
+
+**Effort** — **S–M.** Mechanically tiny (one sign flip on existing splash), but the risk is feel: jitter, orbiting, and accidentally vacuuming yourself need a couple of tuning passes in `QC_AUTOTEST` before it reads as a clean trap rather than chaos.

@@ -4,6 +4,7 @@ use bevy::prelude::*;
 
 use crate::common::*;
 use crate::effects::spawn_particle;
+use crate::monster_model::nearest_limb_hit;
 use crate::physics::{ray_aabb, raycast_world, Aabb};
 
 pub struct ProjectilePlugin;
@@ -97,11 +98,12 @@ pub fn spawn_projectile(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn projectile_move(
+pub(crate) fn projectile_move(
     mut commands: Commands,
     time: Res<Time>,
     colliders: Res<WorldColliders>,
     gfx: Res<GfxAssets>,
+    limb_boxes: Res<LimbBoxes>,
     mut q: Query<(Entity, &mut Transform, &mut Projectile)>,
     targets: Query<(Entity, &GlobalTransform, &Hurtbox, &Faction), With<Health>>,
     mut dmg: MessageWriter<DamageEvent>,
@@ -150,26 +152,47 @@ fn projectile_move(
             }
             let dir = step / dist;
 
-            // Nearest target hit.
+            // World first, so monster/limb hits only count in front of a wall.
             let mut best_t = dist;
-            let mut hit_target: Option<(Entity, Vec3, Vec3)> = None;
+            let mut hit_world: Option<(Vec3, Vec3)> = None;
+            if let Some((t, pt, n)) = raycast_world(tf.translation, dir, best_t, &colliders.solids) {
+                best_t = t;
+                hit_world = Some((pt, n));
+            }
+            // Player projectiles refine to a specific bone (preferred over the
+            // broad body box — same rule as the hitscan weapons).
+            let limb = if p.from_player {
+                nearest_limb_hit(tf.translation, dir, best_t, &limb_boxes.boxes, 0.0)
+            } else {
+                None
+            };
+            // Broad body box: fallback, and the path for enemy bolts hitting the player.
+            let mut body_t = best_t;
+            let mut body_hit: Option<(Entity, Vec3, Vec3)> = None;
             for &(te, center, half) in &target_list {
                 let f = target_fac.get(&te).copied().unwrap_or(Faction::Monster);
                 if !p.hits_faction(f) {
                     continue;
                 }
                 let b = Aabb::from_center_half(center, half);
-                if let Some((t, n)) = ray_aabb(tf.translation, dir, best_t, &b) {
-                    best_t = t;
-                    hit_target = Some((te, tf.translation + dir * t, n));
+                if let Some((t, n)) = ray_aabb(tf.translation, dir, body_t, &b) {
+                    body_t = t;
+                    body_hit = Some((te, tf.translation + dir * t, n));
                 }
             }
-            // Nearest world hit (closer than any target hit found).
-            let mut hit_world: Option<(Vec3, Vec3)> = None;
-            if let Some((t, pt, n)) = raycast_world(tf.translation, dir, best_t, &colliders.solids) {
+
+            // Resolve: a bone hit wins, else the broad body box, else the wall.
+            let mut hit_target: Option<(Entity, Vec3, Vec3)> = None;
+            let mut hit_group: Option<LimbGroup> = None;
+            if let Some((e, g, t, n)) = limb {
                 best_t = t;
-                hit_world = Some((pt, n));
-                hit_target = None;
+                hit_target = Some((e, tf.translation + dir * t, n));
+                hit_group = Some(g);
+                hit_world = None;
+            } else if let Some((e, pt, n)) = body_hit {
+                best_t = body_t;
+                hit_target = Some((e, pt, n));
+                hit_world = None;
             }
 
             if hit_target.is_none() && hit_world.is_none() {
@@ -186,6 +209,10 @@ fn projectile_move(
                 let explode_now = p.kind == ProjKind::Rocket || hit_target.is_some();
                 if explode_now {
                     let pos = tf.translation;
+                    let direct_limb = match (hit_target, hit_group) {
+                        (Some((te, _, _)), Some(g)) => Some((te, g)),
+                        _ => None,
+                    };
                     expl.write(ExplosionEvent {
                         pos,
                         radius: p.splash_radius,
@@ -194,6 +221,7 @@ fn projectile_move(
                         from_player: p.from_player,
                         color: rgb(1.0, 0.6, 0.2),
                         push: p.push,
+                        direct_limb,
                     });
                     sfx.write(Sfx::at(Sound::Explosion, pos));
                     exploded = true;
@@ -211,7 +239,12 @@ fn projectile_move(
             } else {
                 // Direct-hit projectile (nail / bolt).
                 if let Some((te, pt, n)) = hit_target {
-                    dmg.write(DamageEvent { target: te, amount: p.damage, source: p.source, knockback: dir * p.push });
+                    let knock = dir * p.push;
+                    if let Some(g) = hit_group {
+                        dmg.write(DamageEvent::limb(te, p.damage, p.source, knock, g));
+                    } else {
+                        dmg.write(DamageEvent::body(te, p.damage, p.source, knock));
+                    }
                     impact.write(ImpactEvent { pos: pt, normal: n, blood: true });
                 } else if let Some((pt, n)) = hit_world {
                     impact.write(ImpactEvent { pos: pt, normal: n, blood: false });
@@ -225,7 +258,7 @@ fn projectile_move(
         // blast radius than a grenade that explodes on a direct hit.
         if !exploded && p.kind == ProjKind::Grenade && p.fuse <= 0.0 {
             let pos = tf.translation;
-            expl.write(ExplosionEvent { pos, radius: p.splash_radius * 1.5, damage: p.splash_damage, source: p.source, from_player: p.from_player, color: rgb(1.0, 0.6, 0.2), push: p.push });
+            expl.write(ExplosionEvent { pos, radius: p.splash_radius * 1.5, damage: p.splash_damage, source: p.source, from_player: p.from_player, color: rgb(1.0, 0.6, 0.2), push: p.push, direct_limb: None });
             sfx.write(Sfx::at(Sound::Explosion, pos));
             exploded = true;
         }

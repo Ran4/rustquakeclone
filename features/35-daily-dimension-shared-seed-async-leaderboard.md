@@ -1,0 +1,15 @@
+# 35. Daily Dimension — Shared Seed + Async Leaderboard
+
+> One date, one seed, one shuffled run of the campaign — everybody plays the *same* twist on the same hand-built maps, then settles it on a clock.
+
+**The idea** — A single global integer, the *seed-of-the-day* (a hash of today's UTC date), deterministically perturbs the spawn plan of all eight dimensions: which `MonsterKind` stands where, where the Silver Key is guarded, and how health/armor/ammo are scattered. The maps stay hand-built — same brushes, same fog, same key→door→exit loop — but the *threat layout* is reshuffled identically for every player worldwide. A run timer ticks from level 1's first frame to the final exit; on victory the board shows your time against everyone else's for that exact seed.
+
+**Why it's fresh** — Roguelikes randomise geometry and lose authorship; pure leaderboards race a fixed map and go stale. Daily Dimension keeps the *designed* levels but makes the population a shared puzzle that resets every 24 hours, so the "metagame" is the whole planet solving one curated permutation at once. No netcode, no live lobbies — just a number and a posted time.
+
+**How it plays** — You boot in knowing the map but not the ambush. The Death Knight that usually guards level 7's key might be a swarm of Scrags instead; the rocket ammo you relied on sits across a void this morning. You re-read familiar geometry under new pressure — do you rocket-jump the gap to grab armor early, or floor the level-8 truck past a re-seeded mob? Mastery shifts from memorising one layout to *adapting fast* to today's deal, and the timer rewards routing, weapon-carry hoarding, and clean movement.
+
+**How it fits QUAKECLONE** — It sits cleanly on `level.rs`: `setup_level`/`apply_theme_and_build` already fills a `SpawnPlan { monsters, items, ambush, exit }` per level, so a seeded pass that permutes those vectors before spawning is the entire gameplay change. Placement still flows through the same `monster_model.rs` procedural rigs, `pickups.rs` props and `physics.rs` collision. `gamestate.rs` `exit_system` already detects per-level completion and the campaign win — the natural hooks to start/stop the timer and to post a score on `GameState::Victory`. `config.ron` (`config.rs`) gains a `daily: true` toggle alongside `start_level`.
+
+**Build sketch** — Derive `seed = hash(utc_date)`; seed a small deterministic PRNG. After each level builds, run a constrained shuffle of `plan.monsters`/`plan.items` (swap kinds and snap positions to existing valid spawn points so nothing lands inside a brush). The honest hard part is the leaderboard backend: a tiny signed HTTP POST (seed, time, name) to a hosted endpoint, plus client-side fetch — anti-cheat is unsolved here, so v1 stays an honour-system board with sanity bounds (min plausible time, completed-all-levels flag).
+
+**Effort** — **M.** Seeded perturbation is small and self-contained; the real risk is the networked board (hosting, abuse, and keeping perturbation legal so no seed soft-locks a key behind geometry — needs a validity check or `QC_EXIT_RUSH`-style automated sweep over a week of seeds).

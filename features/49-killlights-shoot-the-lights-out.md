@@ -1,0 +1,15 @@
+# 49. Killlights — Shoot the Lights Out
+
+> Every room is lit by lamps you can break. Shoot them out and the dark belongs to whoever sees better in it.
+
+**The idea** — The point lights that fill each dimension stop being scenery and become destructible props: every placed lamp gets a faceted low-poly fixture, a small hit-box and a pool of health. Put a pellet, a nail or a stray rocket into one and it dies in a shower of sparks and a glass-pop, its point light snuffed and that whole pocket of the room dropping to fog-black. Because both your eyes and the monsters' perception hinge on that light, killing it is a *tactic* — black out the corridor you're about to retreat down so the Grunt loses its line on you, or smother a vault so you can knife the Death Knight blind. The dark isn't decoration; it's terrain you author with your trigger.
+
+**Why it's fresh** — Quake lighting is baked and inert; you fight in whatever the level-designer lit. Letting the player *edit* the lightmap mid-fight, and tying both factions' sight to it, turns illumination into a contested resource almost no FPS treats as ammo-spendable cover. It pairs naturally with echolocation and stealth ideas, but stands alone as a brutal swing of who-can-see-whom.
+
+**How it plays** — You read a room by its lamps and decide which to keep and which to kill. Snipe the far sconce so the Enforcer can't pre-fire your doorway, then push through the dark you made; or leave one lit as bait and ambush from the black beside it. Monsters that lose their sightline lapse to a searching crawl, so a blacked-out room is yours to reposition in — until something with better dark-sight finds you anyway.
+
+**How it fits QUAKECLONE** — Each `light(...)` placement in the `level.rs` Build API becomes a damageable entity with a tiny fixture mesh and a health pool routed through `combat.rs`, so it takes hits from `weapons.rs` hitscan and `projectiles.rs` splash exactly like a monster. On death the entity despawns its Bevy point light (the same dynamic-light path muzzles and explosions already drive) and bumps a coarse per-room "lit" proxy. `enemies.rs` gates its Idle→Chase line-of-sight perception on that proxy — a cheap lit-ness lookup layered onto the existing LoS check rather than a true visibility solve — so darkness genuinely blinds the AI. `effects.rs` throws the sparks and glass gibs, `audio_gen.rs` synthesises the pop, and `hud.rs` darkens the local fog so the room visibly drops out.
+
+**Build sketch** — Tag each Build light with a room id and spawn a `Killlight` component holding its `PointLight` handle and intensity; on zero health, despawn the light, emit sparks, and decrement a `RoomLit` resource keyed by room. Feed that into the `enemies.rs` perception gate and a fog/ambient lerp. The honest hard part is the perception coupling — making a cheap darkness proxy (room-bucket lit-count, maybe a single sample toward the player) that reads as *fair* both ways without a real per-pixel visibility pass.
+
+**Effort** — **M.** Main risk: tying monster perception to lit-ness with a proxy cheap enough to ship yet fair enough that getting spotted in the dark never feels arbitrary.

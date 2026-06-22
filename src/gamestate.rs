@@ -106,7 +106,7 @@ fn lava_damage(
     // instant you plunge past the molten core, however far you've drifted.
     if ptf.translation.y < lava.kill_y {
         flash.write(ScreenFlash { color: style.hazard_flash, strength: 1.0 });
-        dmg.write(DamageEvent { target: pe, amount: 10_000.0, source: None, knockback: Vec3::ZERO });
+        dmg.write(DamageEvent::body(pe, 10_000.0, None, Vec3::ZERO));
         return;
     }
 
@@ -118,7 +118,7 @@ fn lava_damage(
         *acc += dt;
         if *acc >= 0.3 {
             *acc = 0.0;
-            dmg.write(DamageEvent { target: pe, amount: style.hazard_dot, source: None, knockback: Vec3::Y * 3.5 });
+            dmg.write(DamageEvent::body(pe, style.hazard_dot, None, Vec3::Y * 3.5));
         }
     } else {
         *acc = 0.0;

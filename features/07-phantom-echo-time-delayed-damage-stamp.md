@@ -1,0 +1,15 @@
+# 07. Phantom Echo — Time-Delayed Damage Stamp
+
+> Crack the Whip to plant a ghost anchor in time; 1.2 seconds later every hit you landed since then detonates a second time, exactly where it first connected.
+
+**The idea** — A Whip crack no longer just lashes a monster — it stamps a *phantom echo*. From that instant, the game records every hit you land (the pellet that bit a Grunt, the rocket that splashed an Ogre, the nail that pinned a Scrag) as a tiny ledger entry: position, damage, source. 1.2 seconds after the stamp, the ledger replays — each recorded hit re-detonates at its *original* world position as a half-strength phantom blast, complete with a desaturated ghost-blue fireball. You hit once in the present, again in the past.
+
+**Why it's fresh** — Quake combat is instantaneous. Phantom Echo adds a deliberate *temporal* second beat with no analogue in the genre: the damage you "deposited" pays out later, at coordinates the enemy may have already left — so the echo only connects if you herd monsters back through where they were, or if they're packed too tight to escape. It's a damage-over-time mechanic that rewards spatial memory instead of just patience.
+
+**How it plays** — The Whip stops being a panic-shove and becomes an opener. Crack, then dump your loudest burst — super-shotgun, a rocket, a fistful of nails — into a clustered pack, then *reposition*: rocket-jump out, wall-jump to a flank, and watch the echo bloom behind you and finish the stragglers. The skill is timing the stamp before a flurry, and reading where bodies will still be in 1.2s. Whiffed shots stamp nothing; commitment is the cost.
+
+**How it fits QUAKECLONE** — It piggybacks the existing damage pipeline cleanly. Every `DamageEvent` (combat.rs) carries `source`, `amount`, and a position-bearing impact; the echo system records those into a ring buffer, then on expiry re-emits them as `ExplosionEvent`s (the rocket/grenade splash path already does radius falloff + knockback). The ghost fireball reuses the expanding-fireball + auto-despawn light in effects.rs, just retinted; the replay "thoom" is a pitched-down `Sfx` from audio_gen.rs. The trigger hangs off the Whip's `Melee` branch in weapons.rs. No collision or rig work — it rides systems that already exist.
+
+**Build sketch** — Add a `PhantomEcho { timer, hits: Vec<StampedHit> }` resource armed on Whip strike. A small system taps the `DamageEvent` stream and appends entries while the window is open; on timeout it drains the buffer into half-damage `ExplosionEvent`s and ghost fireballs. The honest hard part is *feel*, not plumbing: a stale echo must read as deliberate, not a bug — it needs a clear ghost-anchor VFX at the stamp moment and a HUD tick counting down, or players will think damage is firing randomly. Tuning the 1.2s window and the 50% multiplier so it rewards skill without trivializing packs is the real work.
+
+**Effort** — **S–M.** Plumbing is small; risk is balance and legibility — an invisible delayed-damage source can feel arbitrary unless the stamp and the payout are loudly telegraphed.

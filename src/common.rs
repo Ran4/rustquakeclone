@@ -41,6 +41,25 @@ pub mod tune {
     /// Player AABB half-extents and eye offset from the AABB center.
     pub const PLAYER_HALF: [f32; 3] = [0.4, 0.9, 0.4];
     pub const EYE_OFFSET: f32 = 0.65; // eye sits near the top of the box
+
+    // --- Grapnel whip (Whip alt-fire pendulum grapple) -----------------------
+    /// Max hitscan reach of the latch ray (m). Long enough to Spider-Man across a
+    /// level-8 dam span, short of "anchor the whole map".
+    pub const GRAPPLE_RANGE: f32 = 60.0;
+    /// Rope-length floor (m). Keeps the player AABB clear of the anchored face so
+    /// the constraint and move_and_slide can't deadlock at the anchor.
+    pub const GRAPPLE_MIN_LEN: f32 = 2.0;
+    /// Slack tolerance (m): treat the rope as taut only once you're this far past
+    /// `len`, so micro-jitter at exactly `len` doesn't toggle the constraint.
+    pub const GRAPPLE_SLACK: f32 = 0.05;
+    /// Reel-in speed while the reel key is held (m/s the rope shortens). About run
+    /// speed: a powerful but earned hand-over-hand climb / arc-tightening pump.
+    pub const GRAPPLE_REEL_SPEED: f32 = 9.0;
+    /// Distance below which the constraint is skipped (degenerate dir / NaN guard).
+    pub const GRAPPLE_EPS: f32 = 0.05;
+    /// Auto-detach after this many consecutive frames pinned taut against a wall
+    /// (scraping a corner) with almost no speed — the anti solver-fight backstop.
+    pub const GRAPPLE_STUCK_FRAMES: u32 = 12;
 }
 
 // ----------------------------------------------------------------------------
@@ -116,17 +135,76 @@ pub struct Armor {
     pub absorb: f32, // fraction of damage absorbed by armor (0..1)
 }
 
+/// A severable / individually-tracked limb group on a monster rig. Every bone of
+/// a monster maps to exactly one group; pouring enough damage into a group's
+/// hurtboxes severs it (the bone subtree detaches and the AI is crippled). The
+/// right arm is the weapon arm on every kind, so `ArmR` sever = disarm.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum LimbGroup {
+    Head,
+    Torso, // pelvis/torso/chest/etc — never severs (centre-mass hit surface)
+    ArmL,
+    ArmR, // the weapon arm on every kind here
+    LegL,
+    LegR,
+    WingL, // Scrag only
+}
+impl LimbGroup {
+    pub const COUNT: usize = 7;
+    pub fn idx(self) -> usize {
+        self as usize
+    }
+    pub fn severable(self) -> bool {
+        !matches!(self, LimbGroup::Torso)
+    }
+    pub fn is_weapon(self) -> bool {
+        matches!(self, LimbGroup::ArmR)
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Messages (buffered events — Bevy 0.19 renamed Event->Message for these)
 // ----------------------------------------------------------------------------
 
-/// Apply damage to a target entity.
+/// Apply damage to a target entity. `limb` routes the hit to a specific limb
+/// group's pool (for dismemberment) as well as the body Health; `None` is the
+/// legacy body-only hit (player damage, splash body pool, enemy fire).
 #[derive(Message)]
 pub struct DamageEvent {
     pub target: Entity,
     pub amount: f32,
     pub source: Option<Entity>,
     pub knockback: Vec3,
+    pub limb: Option<LimbGroup>,
+}
+impl DamageEvent {
+    /// A body hit (no specific limb) — the legacy behaviour.
+    pub fn body(target: Entity, amount: f32, source: Option<Entity>, knockback: Vec3) -> Self {
+        Self { target, amount, source, knockback, limb: None }
+    }
+    /// A limb-targeted hit: damages Health *and* the limb's sever pool.
+    pub fn limb(target: Entity, amount: f32, source: Option<Entity>, knockback: Vec3, limb: LimbGroup) -> Self {
+        Self { target, amount, source, knockback, limb: Some(limb) }
+    }
+}
+
+/// Sever a limb group on a monster rig (detach the bone subtree + spawn a gib +
+/// flag the AI). Emitted by `apply_damage` when a limb's pool empties.
+#[derive(Message)]
+pub struct SeverEvent {
+    pub root: Entity,
+    pub limb: LimbGroup,
+    pub at: Vec3,
+    pub dir: Vec3,
+}
+
+/// Per-frame flat list of live limb hitboxes, shared by every weapon so all
+/// damage paths (hitscan, projectile, melee, splash) are limb-aware. Rebuilt
+/// once per frame from live bone `GlobalTransform`s.
+#[derive(Resource, Default)]
+pub struct LimbBoxes {
+    /// (root enemy entity, group, world-space AABB) for present, un-severed limbs.
+    pub boxes: Vec<(Entity, LimbGroup, Aabb)>,
 }
 
 /// Spawn an explosion that deals radius damage + knockback and a visual blast.
@@ -139,6 +217,9 @@ pub struct ExplosionEvent {
     pub from_player: bool,
     pub color: Color,
     pub push: f32,
+    /// If this blast came from a projectile that struck a specific limb directly,
+    /// the (target, limb) it hit — so splash focuses that limb.
+    pub direct_limb: Option<(Entity, LimbGroup)>,
 }
 
 /// A monster corpse left behind on death; fades out after the timer.
@@ -227,6 +308,8 @@ pub enum Sound {
     Ambient,
     Lightning,
     Whip,
+    RopeTaut,
+    Sever,
     EngineLoop,
     EngineStart,
     TireScreech,
@@ -261,6 +344,8 @@ impl Sound {
             Sound::Ambient => "sounds/ambient.wav",
             Sound::Lightning => "sounds/lightning.wav",
             Sound::Whip => "sounds/whip.wav",
+            Sound::RopeTaut => "sounds/rope_taut.wav",
+            Sound::Sever => "sounds/sever.wav",
             // ElevenLabs-generated vehicle sounds (scripts/generate_sounds.py).
             Sound::EngineLoop => "sounds/engine_loop.wav",
             Sound::EngineStart => "sounds/engine_start.wav",
@@ -269,14 +354,14 @@ impl Sound {
             Sound::RamHit => "sounds/ram_hit.wav",
         }
     }
-    pub fn all() -> [Sound; 30] {
+    pub fn all() -> [Sound; 32] {
         use Sound::*;
         [
             Shotgun, SuperShotgun, Nailgun, RocketFire, GrenadeFire, Explosion,
             GrenadeBounce, Impact, PickupHealth, PickupArmor, PickupAmmo,
             PickupWeapon, KeyPickup, Jump, Land, PlayerPain, PlayerDeath,
             EnemySight, EnemyPain, EnemyDeath, Door, Victory, Ambient, Lightning,
-            Whip, EngineLoop, EngineStart, TireScreech, Crash, RamHit,
+            Whip, RopeTaut, Sever, EngineLoop, EngineStart, TireScreech, Crash, RamHit,
         ]
     }
 }

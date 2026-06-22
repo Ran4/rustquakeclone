@@ -1,0 +1,15 @@
+# 11. Adrenal Conductor — Heartbeat-Scrubbed Director
+
+> A pacing AI that reads how cornered you are, doles monsters out (or holds them back) to keep you on the knife's edge, and plays your own heartbeat back at you as the score.
+
+**The idea** — A single `Director` resource computes a per-frame **threat budget**: how much pressure you're under right now (nearby awake monsters, incoming projectiles, your health/armor, recent damage taken, ammo for your current weapon). It compares that to a target tension band and acts as a valve. Under target, it wakes idle monsters early, nudges `Chase` toward `Attack`, and releases held spawns from "reinforcement" spawn points. Over target — you're bleeding and surrounded — it stalls a wave, lets a Knight break off to circle instead of lunge, and buys you a breath. A synthesised **heartbeat** loop is scrubbed in BPM and thump-depth straight from the threat number, so calm reads as a slow ~60bpm pulse and a near-death scramble pounds at ~150.
+
+**Why it's fresh** — Left 4 Dead's Director paces *spawns*; almost nobody pipes that same signal into a procedurally-resynthesised diegetic heartbeat that is the *only* music. Here the AI's internal tension variable and the soundtrack are the same float — the difficulty curve is audible, not hidden in spawn tables.
+
+**How it plays** — You learn to *hear* trouble before you see it. The pulse quickening tells you a flank is waking; a sudden slow tells you the room is genuinely clear, not a fake lull. It rewards aggression — push hard while the budget has slack and you earn a quieter beat; turtle and the Director feeds you just enough to keep the pressure honest. Rocket-jumping past a fight to deny the Director its kills becomes a real tactic.
+
+**How it fits QUAKECLONE** — Extends `enemies.rs`: the `Director` reads/writes `Enemy.awake` and nudges the `AiState` Idle→Chase→Attack transitions and `attack_cd`, and gates `spawn_monster`. It taxes the threat estimate using `physics.rs` raycasts (line-of-sight count) and `projectiles.rs` (live bolts near the player). The heartbeat is a new looping WAV authored in `audio_gen.rs` (its `sine_sweep`/`noise` envelope primitives make a clean lub-dub), played and scrubbed exactly like `vehicle.rs` does the truck engine — a persistent `AudioSink` whose `set_speed`/`set_volume` are lerped per frame. `level.rs` Build API gains `reinforce(...)` held-spawn markers; `gamestate.rs` resets the budget per level.
+
+**Build sketch** — Easy parts: the threat float and the heartbeat (the truck already proves per-frame `AudioSink` scrubbing, and `audio_gen.rs` already builds enveloped one-shots). The hard part is **tuning the controller so it feels fair, not rubber-banded** — players must never sense they're being throttled. Needs a slow-moving budget with hysteresis, hard caps on how much it can withhold, and a `QC_AUTOTEST` overlay logging the budget vs. spawns to tune offline.
+
+**Effort** — **M**. Main risk: a Director that feels like it's cheating, deflating the win; mitigate with conservative valve limits and lots of `QC_AUTOTEST` telemetry runs.

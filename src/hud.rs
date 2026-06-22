@@ -206,7 +206,7 @@ fn spawn_hud(mut commands: Commands, existing: Query<Entity, With<HudRoot>>) {
     // Center hint (shown when the cursor isn't captured).
     commands.spawn((
         Node { position_type: PositionType::Absolute, top: Val::Percent(62.0), left: Val::Percent(50.0), margin: UiRect { left: Val::Px(-260.0), ..default() }, width: Val::Px(520.0), justify_content: JustifyContent::Center, ..default() },
-        Text::new("Click to play  •  WASD move  •  Space jump  •  Mouse aim  •  LMB fire  •  1-7 weapons  •  wheel switch"),
+        Text::new("Click to play  •  WASD move  •  Space jump  •  Mouse aim  •  LMB fire  •  RMB grapnel (Whip) + Ctrl reel  •  1-7 weapons"),
         small(),
         TextColor(rgb(0.9, 0.9, 0.7)),
         TextLayout { justify: Justify::Center, ..default() },

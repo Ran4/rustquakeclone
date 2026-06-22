@@ -1,23 +1,107 @@
 //! Player weapons: inventory, firing (hitscan + projectile), switching, the
 //! first-person view-model, muzzle flash and recoil.
 
+use bevy::audio::Volume;
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
 
+use crate::common::tune::*;
 use crate::common::*;
 use crate::effects::{spawn_muzzle_flash, Lifetime};
-use crate::physics::{ray_aabb, raycast_world, Aabb};
+use crate::monster_model::nearest_limb_hit;
+use crate::physics::{line_of_sight, ray_aabb, raycast_world, Aabb};
 use crate::player::{Player, PlayerCamera};
 use crate::projectiles::{spawn_projectile, ProjKind};
+use crate::vehicle::ActiveVehicle;
 
 pub struct WeaponsPlugin;
 impl Plugin for WeaponsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ViewKick>().add_systems(
-            Update,
-            (switch_weapon, fire_weapon, update_viewmodel)
-                .run_if(in_state(GameState::Playing)),
-        );
+        app.init_resource::<ViewKick>()
+            .add_systems(
+                Update,
+                (switch_weapon, fire_weapon, update_viewmodel, grapple_audio_lifecycle)
+                    .run_if(in_state(GameState::Playing)),
+            )
+            // grapple_cast does the discrete edges (latch / detach / range / LoS).
+            // It runs after look (aim is fresh) and after vehicle_activate (a
+            // same-frame mount detaches), and before player_move so the velocity
+            // constraint inside player_move sees a same-frame latch.
+            .add_systems(
+                Update,
+                grapple_cast
+                    .after(crate::player::player_look)
+                    .after(crate::vehicle::vehicle_activate)
+                    .before(crate::player::player_move)
+                    .run_if(in_state(GameState::Playing)),
+            )
+            .add_systems(
+                Update,
+                update_rope_visual.after(grapple_cast).run_if(in_state(GameState::Playing)),
+            )
+            // Tear down the rope sound + visual on death/victory/level-change (the
+            // run_if(Playing) systems can't fire the normal release path there).
+            .add_systems(OnExit(GameState::Playing), cleanup_grapple);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Grapnel whip — the Whip's right-mouse alt-fire: a hitscan latch onto world
+// geometry that hangs the player on a pendulum rope. The rope is a velocity-only
+// constraint applied inside `player_move` (see `rope_constrain`); this module
+// owns the latch/detach edges, the rope visual and the taut-rope audio loop. The
+// left-click melee whip (`fire_weapon` / `melee_strike`) is untouched.
+// ----------------------------------------------------------------------------
+
+/// Held to reel the rope in (shorten it) while swinging — a hand-over-hand climb
+/// and arc-tightener, and the way to get a vertical yank off a ceiling anchor.
+pub const GRAPPLE_REEL_KEY: KeyCode = KeyCode::ControlLeft;
+
+/// Active grapnel-whip rope state, on the player entity. `None` = not grappling.
+#[derive(Component, Default)]
+pub struct Grapple {
+    pub hook: Option<GrappleHook>,
+}
+
+#[derive(Clone)]
+pub struct GrappleHook {
+    /// Fixed world latch point, captured at latch time (a moving anchor degrades
+    /// gracefully via the line-of-sight auto-detach rather than tracking it).
+    pub anchor: Vec3,
+    /// Current rope length / constraint radius (>= GRAPPLE_MIN_LEN).
+    pub len: f32,
+    /// Consecutive frames pinned taut against a wall with ~no speed (watchdog).
+    pub stuck_frames: u32,
+}
+
+/// The single looping taut-rope audio entity (present only while latched).
+#[derive(Component)]
+struct RopeSound;
+
+/// The single persistent rope-line mesh (present only while latched).
+#[derive(Component)]
+struct RopeVisual;
+
+/// One frame of the rope constraint. Pure + headless-testable (no ECS access).
+/// `center` = player AABB center; `vel` = `Player.vel` after gravity, pre-sweep.
+/// Cancels ONLY the outward radial velocity when the rope is taut; it never adds
+/// energy and never writes position, so the swept solver runs exactly as before
+/// and the pendulum is driven entirely by the gravity/air-accel already in `vel`.
+pub fn rope_constrain(center: Vec3, vel: Vec3, anchor: Vec3, len: f32) -> Vec3 {
+    let to_anchor = anchor - center;
+    let dist = to_anchor.length();
+    if dist < GRAPPLE_EPS || len < GRAPPLE_EPS {
+        return vel; // degenerate / NaN guard
+    }
+    if dist <= len + GRAPPLE_SLACK {
+        return vel; // slack: a rope only pulls, never pushes
+    }
+    let radial = to_anchor / dist; // unit, points center -> anchor (inward)
+    let along = vel.dot(radial); // > 0 = moving toward the anchor (inward)
+    if along < 0.0 {
+        vel - radial * along // remove only the outward part
+    } else {
+        vel // inward motion (a fall, or the reel-in pull injected upstream) is free
     }
 }
 
@@ -224,6 +308,8 @@ pub fn setup_player_weapons(
         } else {
             commands.entity(pe).insert(Inventory::default());
         }
+        // Every player carries grapnel state (the Whip's alt-fire rope).
+        commands.entity(pe).insert(Grapple::default());
     }
     if let Ok(ce) = q_cam.single() {
         commands.entity(ce).with_children(|p| {
@@ -277,11 +363,12 @@ fn switch_weapon(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn fire_weapon(
+pub(crate) fn fire_weapon(
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut commands: Commands,
     colliders: Res<WorldColliders>,
+    limb_boxes: Res<LimbBoxes>,
     gfx: Res<GfxAssets>,
     mut rng_state: Local<u32>,
     mut nail_alt: Local<bool>,
@@ -340,12 +427,12 @@ fn fire_weapon(
         Mode::Hitscan { pellets, spread, damage } => {
             for _ in 0..pellets {
                 let d = spread_dir(forward, spread, rand(), rand());
-                hitscan(&mut commands, &colliders, &targets, &gfx, origin, d, damage, pe, false, &mut dmg, &mut impact);
+                hitscan(&mut commands, &colliders, &targets, &limb_boxes, &gfx, origin, d, damage, pe, false, &mut dmg, &mut impact);
             }
         }
         Mode::Beam { damage } => {
             let d = spread_dir(forward, 0.005, rand(), rand());
-            hitscan(&mut commands, &colliders, &targets, &gfx, origin, d, damage, pe, true, &mut dmg, &mut impact);
+            hitscan(&mut commands, &colliders, &targets, &limb_boxes, &gfx, origin, d, damage, pe, true, &mut dmg, &mut impact);
         }
         Mode::Projectile(ProjKind::Nail) => {
             // Twin-barrel alternating nail stream.
@@ -358,7 +445,7 @@ fn fire_weapon(
             spawn_projectile(&mut commands, &gfx, kind, muzzle, forward, true, Some(pe));
         }
         Mode::Melee { damage, range, knockback } => {
-            let end = melee_strike(&colliders, &targets, origin, forward, range, damage, knockback, pe, &mut dmg, &mut impact);
+            let end = melee_strike(&colliders, &targets, &limb_boxes, origin, forward, range, damage, knockback, pe, &mut dmg, &mut impact);
             draw_whip(&mut commands, &gfx, muzzle, end);
         }
     }
@@ -372,6 +459,7 @@ fn fire_weapon(
 fn melee_strike(
     colliders: &WorldColliders,
     targets: &Query<(Entity, &GlobalTransform, &Hurtbox, &Faction), With<Health>>,
+    limb_boxes: &LimbBoxes,
     origin: Vec3,
     dir: Vec3,
     range: f32,
@@ -381,33 +469,38 @@ fn melee_strike(
     dmg: &mut MessageWriter<DamageEvent>,
     impact: &mut MessageWriter<ImpactEvent>,
 ) -> Vec3 {
-    let mut best_t = range;
-    let mut hit_enemy: Option<(Entity, Vec3, Vec3)> = None;
+    // A wall between player and target stops the lash short.
+    let wall_t = raycast_world(origin, dir, range, &colliders.solids).map(|(t, _, _)| t).unwrap_or(range);
+    // Prefer a specific bone (padded reach so a glancing swing still connects);
+    // fall back to the broad body box (a padded torso swing) when no bone is hit.
+    let limb = nearest_limb_hit(origin, dir, wall_t, &limb_boxes.boxes, 0.2);
+    let mut body_t = wall_t;
+    let mut body_hit: Option<(Entity, Vec3, Vec3)> = None;
     for (e, gt, hb, fac) in targets.iter() {
         if *fac != Faction::Monster {
             continue;
         }
-        // Pad the hurtbox a touch so a glancing swing still connects.
         let b = Aabb::from_center_half(gt.translation(), hb.half + Vec3::splat(0.2));
-        if let Some((t, n)) = ray_aabb(origin, dir, best_t, &b) {
-            best_t = t;
-            hit_enemy = Some((e, origin + dir * t, n));
+        if let Some((t, n)) = ray_aabb(origin, dir, body_t, &b) {
+            body_t = t;
+            body_hit = Some((e, origin + dir * t, n));
         }
     }
-    // A wall between player and target stops the lash short.
-    if let Some((t, _pt, _n)) = raycast_world(origin, dir, best_t, &colliders.solids) {
-        best_t = t;
-        hit_enemy = None;
-    }
-    if let Some((e, pt, n)) = hit_enemy {
-        // Push horizontally away from the player plus an upward lift, so the
-        // monster flies back regardless of the aim pitch.
-        let horiz = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
-        let push = horiz * knockback + Vec3::Y * knockback * 0.36;
-        dmg.write(DamageEvent { target: e, amount: damage, source: Some(source), knockback: push });
+    // Push horizontally away from the player plus an upward lift, so the monster
+    // flies back regardless of the aim pitch.
+    let horiz = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
+    let push = horiz * knockback + Vec3::Y * knockback * 0.36;
+    if let Some((e, g, t, n)) = limb {
+        dmg.write(DamageEvent::limb(e, damage, Some(source), push, g));
+        impact.write(ImpactEvent { pos: origin + dir * t, normal: n, blood: true });
+        origin + dir * t.min(range)
+    } else if let Some((e, pt, n)) = body_hit {
+        dmg.write(DamageEvent::body(e, damage, Some(source), push));
         impact.write(ImpactEvent { pos: pt, normal: n, blood: true });
+        origin + dir * body_t.min(range)
+    } else {
+        origin + dir * wall_t.min(range)
     }
-    origin + dir * best_t.min(range)
 }
 
 /// Draw the whip lash as a couple of thin segments that droop slightly, with a
@@ -438,6 +531,176 @@ fn whip_segment(commands: &mut Commands, gfx: &GfxAssets, a: Vec3, b: Vec3, w: f
     ));
 }
 
+/// Acquire / maintain / release the grapnel latch (the discrete edges). Runs
+/// after `player_look` + `vehicle_activate` and before `player_move`, so a latch
+/// taken this frame is honored by the same-frame rope constraint and a same-frame
+/// vehicle mount forces a detach first. The continuous swing math lives in
+/// `player_move` via [`rope_constrain`].
+#[allow(clippy::too_many_arguments)]
+fn grapple_cast(
+    mouse: Res<ButtonInput<MouseButton>>,
+    colliders: Res<WorldColliders>,
+    active: Res<ActiveVehicle>,
+    cam: Query<&GlobalTransform, With<PlayerCamera>>,
+    mut q: Query<(&Transform, &Inventory, &mut Grapple), With<Player>>,
+    mut sfx: MessageWriter<Sfx>,
+    mut commands: Commands,
+    gfx: Res<GfxAssets>,
+) {
+    let Ok((ptf, inv, mut grap)) = q.single_mut() else { return };
+    let center = ptf.translation;
+
+    // Want to be (or stay) latched: RMB held, Whip equipped, on foot.
+    let want = mouse.pressed(MouseButton::Right)
+        && inv.current == WeaponKind::Whip
+        && active.0.is_none();
+
+    // --- maintain / detach an existing hook --------------------------------
+    if let Some(hook) = grap.hook.as_ref() {
+        let mut detach = !want;
+        // Flung clean out of range.
+        if !detach && hook.anchor.distance(center) > GRAPPLE_RANGE * 1.15 {
+            detach = true;
+        }
+        // Line of sight to the anchor broken by geometry (also covers a truck
+        // driving out from under the anchor). The anchor sits on a solid, so test
+        // to a point pulled slightly off the surface toward the player.
+        if !detach {
+            let pulled = hook.anchor + (center - hook.anchor).normalize_or_zero() * 0.2;
+            if !line_of_sight(center, pulled, &colliders.solids) {
+                detach = true;
+            }
+        }
+        // Stuck watchdog (incremented by player_move while pinned taut + slow).
+        if !detach && hook.stuck_frames > GRAPPLE_STUCK_FRAMES {
+            detach = true;
+        }
+        if detach {
+            grap.hook = None;
+        }
+        return; // already latched (or just detached) — never re-cast this frame
+    }
+
+    // --- acquire a new hook, only on the press edge ------------------------
+    if !want || !mouse.just_pressed(MouseButton::Right) {
+        return;
+    }
+    let Ok(cam_gt) = cam.single() else { return };
+    let origin = cam_gt.translation();
+    let dir = cam_gt.forward().as_vec3();
+    if let Some((t, point, normal)) = raycast_world(origin, dir, GRAPPLE_RANGE, &colliders.solids) {
+        if t < GRAPPLE_EPS {
+            return; // latched a face we're already flush against
+        }
+        let anchor = point + normal * 0.05; // nudge off the surface
+        let len = (anchor - center).length().max(GRAPPLE_MIN_LEN);
+        grap.hook = Some(GrappleHook { anchor, len, stuck_frames: 0 });
+        sfx.write(Sfx::global(Sound::Whip)); // reuse the existing crack
+        draw_whip(&mut commands, &gfx, origin + dir * 0.6, point); // one-shot lash
+    }
+}
+
+/// Spawn the looping taut-rope sound on first latch, despawn it on release, and
+/// while latched scrub its volume toward the swing speed. Mirrors the truck's
+/// `vehicle_audio` three-state `AudioSink` handling (the sink goes live a frame
+/// or two after the entity spawns).
+fn grapple_audio_lifecycle(
+    mut commands: Commands,
+    time: Res<Time>,
+    sounds: Res<Sounds>,
+    q_player: Query<(&Player, &Grapple)>,
+    mut q_rope: Query<Option<&mut AudioSink>, With<RopeSound>>,
+    loops: Query<Entity, With<RopeSound>>,
+) {
+    let dt = time.delta_secs();
+    let latched = q_player.single().map(|(_, g)| g.hook.is_some()).unwrap_or(false);
+    if !latched {
+        for e in &loops {
+            commands.entity(e).despawn();
+        }
+        return;
+    }
+    // Tension volume scrubs with swing speed (idle hum -> straining cable).
+    let speed = q_player.single().map(|(p, _)| p.vel.length()).unwrap_or(0.0);
+    let target = 0.12 + 0.4 * (speed / 12.0).clamp(0.0, 1.0);
+    match q_rope.single_mut() {
+        Ok(Some(mut sink)) => {
+            let k = 1.0 - (-8.0 * dt).exp();
+            let cv = sink.volume().to_linear();
+            sink.set_volume(Volume::Linear(cv + (target - cv) * k));
+        }
+        Ok(None) => {} // entity spawned, sink not live yet
+        Err(_) => {
+            commands.spawn((
+                AudioPlayer::new(sounds.get(Sound::RopeTaut)),
+                PlaybackSettings::LOOP.with_volume(Volume::Linear(0.0)),
+                RopeSound,
+                Name::new("RopeSound"),
+            ));
+        }
+    }
+}
+
+/// Keep one persistent rope-line mesh stretched from the whip muzzle to the
+/// anchor while latched; despawn it when the rope drops.
+fn update_rope_visual(
+    mut commands: Commands,
+    gfx: Res<GfxAssets>,
+    cam: Query<&GlobalTransform, With<PlayerCamera>>,
+    q_player: Query<&Grapple, With<Player>>,
+    mut q_vis: Query<&mut Transform, With<RopeVisual>>,
+    existing: Query<Entity, With<RopeVisual>>,
+) {
+    let hook = q_player.single().ok().and_then(|g| g.hook.clone());
+    let Some(hook) = hook else {
+        for e in &existing {
+            commands.entity(e).despawn();
+        }
+        return;
+    };
+    let Ok(cam_gt) = cam.single() else { return };
+    let muzzle = cam_gt.translation() + cam_gt.forward().as_vec3() * 0.6;
+    let anchor = hook.anchor;
+    let mid = (muzzle + anchor) * 0.5;
+    let len = muzzle.distance(anchor).max(0.05);
+    let dir = (anchor - muzzle).normalize_or_zero();
+    // Pick an up vector not parallel to the rope so a near-vertical (ceiling)
+    // grapple doesn't make `looking_to` degenerate.
+    let up = if dir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+    let tf = Transform::from_translation(mid)
+        .looking_to(dir, up)
+        .with_scale(Vec3::new(0.03, 0.03, len));
+    if let Ok(mut t) = q_vis.single_mut() {
+        *t = tf;
+    } else {
+        commands.spawn((
+            Mesh3d(gfx.unit_cube.clone()),
+            MeshMaterial3d(gfx.muzzle.clone()),
+            tf,
+            RopeVisual,
+            LevelEntity,
+        ));
+    }
+}
+
+/// On leaving `Playing` (death / victory / level change): tear down both halves
+/// of an active grapple — silence the looping rope sound so it doesn't drone over
+/// the death/victory screen, and despawn the rope-line mesh so it doesn't hang
+/// frozen behind the (semi-transparent) overlay. The Playing-gated systems that
+/// normally do this can't run once the state has flipped, so it must happen here.
+fn cleanup_grapple(
+    mut commands: Commands,
+    loops: Query<Entity, With<RopeSound>>,
+    visuals: Query<Entity, With<RopeVisual>>,
+) {
+    for e in &loops {
+        commands.entity(e).despawn();
+    }
+    for e in &visuals {
+        commands.entity(e).despawn();
+    }
+}
+
 fn spread_dir(forward: Vec3, spread: f32, rx: f32, ry: f32) -> Vec3 {
     let up = if forward.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
     let right = forward.cross(up).normalize_or_zero();
@@ -450,6 +713,7 @@ fn hitscan(
     commands: &mut Commands,
     colliders: &WorldColliders,
     targets: &Query<(Entity, &GlobalTransform, &Hurtbox, &Faction), With<Health>>,
+    limb_boxes: &LimbBoxes,
     gfx: &GfxAssets,
     origin: Vec3,
     dir: Vec3,
@@ -460,36 +724,45 @@ fn hitscan(
     impact: &mut MessageWriter<ImpactEvent>,
 ) {
     let max = 200.0;
-    // Nearest monster.
-    let mut best_t = max;
-    let mut hit_enemy: Option<(Entity, Vec3, Vec3)> = None;
+    // Nearest wall first, so monster/limb hits only count in front of it.
+    let wall = raycast_world(origin, dir, max, &colliders.solids);
+    let wall_t = wall.map(|(t, _, _)| t).unwrap_or(max);
+    // Prefer a specific bone box (delivers the per-bone "lead the head" skill);
+    // every awake, in-range monster's silhouette is covered by bone boxes.
+    let limb = nearest_limb_hit(origin, dir, wall_t, &limb_boxes.boxes, 0.0);
+    // Broad body box: the fallback when no bone box is hit (a torso-gap shot, or a
+    // sleeping/distant monster that contributes no limb boxes) — no hit regression.
+    let mut body_t = wall_t;
+    let mut body_hit: Option<(Entity, Vec3, Vec3)> = None;
     for (e, gt, hb, fac) in targets.iter() {
         if *fac != Faction::Monster {
             continue;
         }
         let b = Aabb::from_center_half(gt.translation(), hb.half);
-        if let Some((t, n)) = ray_aabb(origin, dir, best_t, &b) {
-            best_t = t;
-            hit_enemy = Some((e, origin + dir * t, n));
+        if let Some((t, n)) = ray_aabb(origin, dir, body_t, &b) {
+            body_t = t;
+            body_hit = Some((e, origin + dir * t, n));
         }
     }
-    // World (closer than enemy?).
-    let mut world_hit: Option<(Vec3, Vec3)> = None;
-    if let Some((t, pt, n)) = raycast_world(origin, dir, best_t, &colliders.solids) {
-        best_t = t;
-        world_hit = Some((pt, n));
-        hit_enemy = None;
-    }
 
-    let end = origin + dir * best_t.min(max);
+    let hit_t = if let Some((_, _, t, _)) = limb {
+        t
+    } else if body_hit.is_some() {
+        body_t
+    } else {
+        wall_t
+    };
     if beam {
-        draw_beam(commands, gfx, origin, end);
+        draw_beam(commands, gfx, origin, origin + dir * hit_t.min(max));
     }
 
-    if let Some((e, pt, n)) = hit_enemy {
-        dmg.write(DamageEvent { target: e, amount: damage, source: Some(source), knockback: dir * 1.5 });
+    if let Some((e, g, t, n)) = limb {
+        dmg.write(DamageEvent::limb(e, damage, Some(source), dir * 1.5, g));
+        impact.write(ImpactEvent { pos: origin + dir * t, normal: n, blood: true });
+    } else if let Some((e, pt, n)) = body_hit {
+        dmg.write(DamageEvent::body(e, damage, Some(source), dir * 1.5));
         impact.write(ImpactEvent { pos: pt, normal: n, blood: true });
-    } else if let Some((pt, n)) = world_hit {
+    } else if let Some((_, pt, n)) = wall {
         impact.write(ImpactEvent { pos: pt, normal: n, blood: false });
     }
 }
@@ -549,4 +822,135 @@ fn update_viewmodel(
     tf.translation = base + Vec3::new(bx, by, kick.amount.min(1.0) * 0.18);
     tf.scale = vis.scales[idx];
     tf.rotation = Quat::from_rotation_x(-kick.amount.min(1.0) * 0.2);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The rope is a one-sided distance constraint: slack does nothing, taut
+    // cancels only the OUTWARD radial velocity. `len = 4.9` puts a point at
+    // distance 5.0 firmly past `len + GRAPPLE_SLACK`, so the taut branch fires.
+
+    /// At (or inside) the anchor the constraint is a finite no-op (NaN guard).
+    #[test]
+    fn at_anchor_is_noop_and_finite() {
+        let v = rope_constrain(Vec3::ZERO, Vec3::new(3.0, 0.0, 0.0), Vec3::ZERO, 5.0);
+        assert!(v.is_finite());
+        assert_eq!(v, Vec3::new(3.0, 0.0, 0.0));
+    }
+
+    /// Within the rope length, velocity is untouched (a rope only pulls).
+    #[test]
+    fn slack_is_free() {
+        let v = rope_constrain(Vec3::new(0.0, -3.0, 0.0), Vec3::new(0.0, -9.0, 0.0), Vec3::ZERO, 5.0);
+        assert_eq!(v, Vec3::new(0.0, -9.0, 0.0));
+    }
+
+    /// Taut: the outward radial part is removed, the tangential part survives —
+    /// this is exactly what lets air-strafe pump the swing wider.
+    #[test]
+    fn taut_cancels_outward_keeps_tangential() {
+        let v = rope_constrain(Vec3::new(5.0, 0.0, 0.0), Vec3::new(4.0, 6.0, 0.0), Vec3::ZERO, 4.9);
+        assert!(v.x.abs() < 1e-5, "outward x should be cancelled, got {}", v.x);
+        assert!((v.y - 6.0).abs() < 1e-5, "tangential y should survive, got {}", v.y);
+    }
+
+    /// Taut but moving inward (a fall toward the anchor, or reel-in): free.
+    #[test]
+    fn inward_is_free() {
+        let v = rope_constrain(Vec3::new(5.0, 0.0, 0.0), Vec3::new(-4.0, 0.0, 0.0), Vec3::ZERO, 4.9);
+        assert_eq!(v.x, -4.0);
+    }
+
+    /// The projection only ever subtracts — it can never add energy (no runaway).
+    #[test]
+    fn never_adds_energy() {
+        let inp = Vec3::new(4.0, 6.0, 2.0);
+        let v = rope_constrain(Vec3::new(5.0, 0.0, 0.0), inp, Vec3::ZERO, 4.9);
+        assert!(v.length() <= inp.length() + 1e-5);
+    }
+
+    /// Integration test of the real swing loop (the `player_move` velocity
+    /// pipeline minus collision): gravity → rope_constrain → integrate, with the
+    /// production GRAVITY and a fixed 60 Hz step. A pushed-from-the-bottom rope
+    /// must arc to BOTH sides (a genuine pendulum, not a stuck yo-yo) while the
+    /// rope holds the radius (no Euler blow-up / NaN). This is the math the
+    /// screenshot can't show.
+    #[test]
+    fn swings_like_a_pendulum_without_blowing_up() {
+        use crate::common::tune::GRAVITY;
+        let anchor = Vec3::ZERO;
+        let len = 8.0;
+        let mut pos = Vec3::new(0.0, -len, 0.0); // hanging straight down, taut
+        let mut vel = Vec3::new(12.0, 0.0, 0.0); // shoved sideways
+        let dt = 1.0 / 60.0;
+        let (mut min_x, mut max_x, mut max_dist) = (f32::MAX, f32::MIN, 0.0f32);
+        for _ in 0..600 {
+            // 10 seconds
+            vel.y -= GRAVITY * dt;
+            vel = rope_constrain(pos, vel, anchor, len);
+            pos += vel * dt;
+            assert!(pos.is_finite() && vel.is_finite(), "NaN/inf in swing");
+            min_x = min_x.min(pos.x);
+            max_x = max_x.max(pos.x);
+            max_dist = max_dist.max((pos - anchor).length());
+        }
+        assert!(max_x > 3.0, "never swung to the +x side: max_x={max_x}");
+        assert!(min_x < -3.0, "never swung to the -x side: min_x={min_x}");
+        // The pure one-sided velocity projection leaves a small, BOUNDED Euler
+        // drift (~9% over a full 10s continuous swing) rather than a blow-up
+        // (which would be 10x+ or NaN). It's imperceptible over real 1-4s swings,
+        // and the rope mesh always draws to the true anchor, so there's no visible
+        // stretch. We assert it stays within 15% — proof the rope holds.
+        assert!(max_dist < len * 1.15, "rope radius drifted too far: max_dist={max_dist}");
+    }
+
+    /// Reel-in must actually pull the player toward the anchor (regression guard:
+    /// the first cut only shrank `hook.len`, which — because rope_constrain is
+    /// one-sided and never adds inward velocity — moved the player 0m). Mirrors
+    /// the player_move reel loop: inject inward velocity, track len to distance,
+    /// then constrain. A held reel on a dead ceiling-hang must close the distance.
+    #[test]
+    fn reel_in_pulls_the_player_toward_the_anchor() {
+        use crate::common::tune::{GRAPPLE_EPS, GRAPPLE_MIN_LEN, GRAPPLE_REEL_SPEED, GRAVITY};
+        let anchor = Vec3::ZERO;
+        let mut pos = Vec3::new(0.0, -10.0, 0.0); // hanging straight down, at rest
+        let mut vel = Vec3::ZERO;
+        let mut len = 10.0_f32;
+        let dt = 1.0 / 60.0;
+        let start = (pos - anchor).length();
+        for _ in 0..120 {
+            // 2s of holding reel
+            vel.y -= GRAVITY * dt;
+            let to = anchor - pos;
+            let dist = to.length();
+            if dist > GRAPPLE_EPS {
+                let inward = to / dist;
+                if dist > GRAPPLE_MIN_LEN {
+                    let cur_in = vel.dot(inward);
+                    if cur_in < GRAPPLE_REEL_SPEED {
+                        vel += inward * (GRAPPLE_REEL_SPEED - cur_in);
+                    }
+                    len = (dist - GRAPPLE_REEL_SPEED * dt).max(GRAPPLE_MIN_LEN);
+                } else {
+                    let cur_in = vel.dot(inward);
+                    if cur_in > 0.0 {
+                        vel -= inward * cur_in;
+                    }
+                }
+            }
+            vel = rope_constrain(pos, vel, anchor, len);
+            pos += vel * dt;
+            assert!(pos.is_finite());
+        }
+        let end = (pos - anchor).length();
+        // Reeled a long way in, then SETTLED at the min-length floor (didn't yank
+        // on through to the anchor) — free-space robustness without a wall to stop it.
+        assert!(end < start - 5.0, "reel-in failed to pull the player in: {start} -> {end}");
+        assert!(
+            (GRAPPLE_MIN_LEN - 0.5..=GRAPPLE_MIN_LEN + 1.0).contains(&end),
+            "reel-in didn't settle at the min-length floor: end={end}"
+        );
+    }
 }

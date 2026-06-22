@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use crate::common::{tune::EYE_OFFSET, *};
 use crate::effects::Lifetime;
 use crate::level::{MonsterKind, SpawnPlan};
-use crate::monster_model::{build_monster_visual, Dying, MonsterMats, MonsterTextures};
+use crate::monster_model::{build_monster_visual, cripple_speed, Crippled, Dying, MonsterMats, MonsterTextures};
 use crate::physics::{line_of_sight, move_and_slide, ray_aabb, raycast_world, Aabb};
 use crate::player::{Player, PlayerHistory};
 use crate::projectiles::{spawn_projectile, ProjKind};
@@ -244,8 +244,8 @@ pub fn spawn_monster(
             Name::new(format!("{kind:?}")),
         ))
         .id();
-    let mats = build_monster_visual(commands, meshes, materials, tex, kind, root);
-    commands.entity(root).insert(MonsterMats(mats));
+    let (mats, limbs) = build_monster_visual(commands, meshes, materials, tex, kind, root);
+    commands.entity(root).insert((MonsterMats(mats), limbs, Crippled::default()));
 }
 
 /// Spawn every monster from the level's SpawnPlan. Runs in the OnEnter chain.
@@ -271,7 +271,7 @@ fn enemy_ai(
     history: Res<PlayerHistory>,
     mut commands: Commands,
     mut rng_state: Local<u32>,
-    mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Knockback), (Without<Player>, Without<Dying>)>,
+    mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Knockback, Option<&Crippled>), (Without<Player>, Without<Dying>)>,
     q_player: Query<(Entity, &Transform), With<Player>>,
     mut dmg: MessageWriter<DamageEvent>,
     mut sfx: MessageWriter<Sfx>,
@@ -297,12 +297,20 @@ fn enemy_ai(
         x as f32 / u32::MAX as f32
     };
 
-    for (e, mut tf, mut en, mut kb) in &mut q {
+    for (e, mut tf, mut en, mut kb, crippled) in &mut q {
         en.attack_cd = (en.attack_cd - dt).max(0.0);
         en.pain = (en.pain - dt).max(0.0);
         en.pain_cd = (en.pain_cd - dt).max(0.0);
         en.atk_anim = (en.atk_anim - dt * 3.5).max(0.0);
         en.bob += dt * 3.0;
+
+        // Cripples: lost legs slow movement, a blown wing grounds a flyer, a
+        // severed weapon arm disarms (gated in the attack block below).
+        let cr = crippled.copied().unwrap_or_default();
+        let leg_scale = cripple_speed(cr.legs_lost);
+        if cr.grounded && en.flying {
+            en.flying = false; // wing gone — it falls and drags
+        }
 
         let pos = tf.translation;
         let eye = pos + Vec3::Y * en.eye_h;
@@ -360,23 +368,25 @@ fn enemy_ai(
             // hold position while flinching or telegraphing a shot
         } else if !in_attack || needs_approach {
             let dir = if en.flying { to_player } else { Vec3::new(to_player.x, 0.0, to_player.z) };
-            wish = dir.normalize_or_zero() * en.speed;
+            wish = dir.normalize_or_zero() * en.speed * leg_scale;
             en.state = AiState::Chase;
         } else {
             en.state = AiState::Attack;
             let strafe = Vec3::new(-to_player.z, 0.0, to_player.x).normalize_or_zero();
-            wish = strafe * (en.speed * 0.4) * if rand() > 0.5 { 1.0 } else { -1.0 };
+            wish = strafe * (en.speed * 0.4 * leg_scale) * if rand() > 0.5 { 1.0 } else { -1.0 };
         }
 
         // Initiate an attack if able (Grunt telegraphs via a wind-up first).
         if !staggered && in_attack && en.attack_cd <= 0.0 && dist > 0.3 {
             en.attack_cd = en.cd;
-            en.atk_anim = 1.0;
+            en.atk_anim = 1.0; // still flails menacingly even when disarmed
             if en.kind == MonsterKind::Grunt {
-                en.windup = 0.35;
-                en.flash = en.flash.max(0.5); // brief "aim" glint
+                if !cr.disarmed {
+                    en.windup = 0.35;
+                    en.flash = en.flash.max(0.5); // brief "aim" glint
+                }
             } else {
-                do_attack(&mut en, &mut commands, &gfx, e, player_e, eye, player_eye, dist, &mut dmg, &mut sfx, &mut rand);
+                do_attack(&mut en, &mut commands, &gfx, e, player_e, eye, player_eye, dist, cr.disarmed, cr.head_gone, &mut dmg, &mut sfx, &mut rand);
             }
         }
 
@@ -438,6 +448,8 @@ fn do_attack(
     eye: Vec3,
     player_eye: Vec3,
     dist: f32,
+    disarmed: bool,
+    head_gone: bool,
     dmg: &mut MessageWriter<DamageEvent>,
     sfx: &mut MessageWriter<Sfx>,
     rand: &mut impl FnMut() -> f32,
@@ -447,42 +459,61 @@ fn do_attack(
     if to == Vec3::ZERO {
         to = Vec3::NEG_Z;
     }
+    // A blown-off head wrecks aim (bosses only — normals die on head sever).
+    if head_gone {
+        let j = 0.17; // ~10 degrees of extra scatter
+        to = (to + Vec3::new((rand() * 2.0 - 1.0) * j, (rand() * 2.0 - 1.0) * j, (rand() * 2.0 - 1.0) * j)).normalize_or_zero();
+    }
     let muzzle = eye + to * 0.6;
+    // A severed weapon arm still swings/sounds (reads as "fighting around the
+    // hole") but deals no damage — every damaging line below is gated on !disarmed.
     match en.kind {
         Grunt => {
             sfx.write(Sfx::at(Sound::Shotgun, eye));
-            if rand() < 0.6 {
-                dmg.write(DamageEvent { target: player_e, amount: en.damage, source: Some(self_e), knockback: to * 2.0 });
+            if !disarmed && rand() < 0.6 {
+                dmg.write(DamageEvent::body(player_e, en.damage, Some(self_e), to * 2.0));
             }
         }
         Enforcer | Scrag => {
             sfx.write(Sfx::at(Sound::Nailgun, eye));
-            spawn_projectile(commands, gfx, ProjKind::Bolt, muzzle, to, false, Some(self_e));
+            if !disarmed {
+                spawn_projectile(commands, gfx, ProjKind::Bolt, muzzle, to, false, Some(self_e));
+            }
         }
         Ogre => {
             if dist <= en.melee_range {
                 sfx.write(Sfx::at(Sound::EnemyPain, eye));
-                dmg.write(DamageEvent { target: player_e, amount: en.damage, source: Some(self_e), knockback: to * 4.0 });
+                if !disarmed {
+                    dmg.write(DamageEvent::body(player_e, en.damage, Some(self_e), to * 4.0));
+                }
             } else {
                 sfx.write(Sfx::at(Sound::GrenadeFire, eye));
-                let lob = (to + Vec3::Y * 0.35).normalize_or_zero();
-                spawn_projectile(commands, gfx, ProjKind::Grenade, muzzle, lob, false, Some(self_e));
+                if !disarmed {
+                    let lob = (to + Vec3::Y * 0.35).normalize_or_zero();
+                    spawn_projectile(commands, gfx, ProjKind::Grenade, muzzle, lob, false, Some(self_e));
+                }
             }
         }
         Knight => {
             sfx.write(Sfx::at(Sound::EnemyPain, eye));
-            dmg.write(DamageEvent { target: player_e, amount: en.damage, source: Some(self_e), knockback: to * 3.0 });
+            if !disarmed {
+                dmg.write(DamageEvent::body(player_e, en.damage, Some(self_e), to * 3.0));
+            }
         }
         DeathKnight => {
             if dist <= en.melee_range {
-                dmg.write(DamageEvent { target: player_e, amount: en.damage, source: Some(self_e), knockback: to * 4.0 });
+                if !disarmed {
+                    dmg.write(DamageEvent::body(player_e, en.damage, Some(self_e), to * 4.0));
+                }
                 sfx.write(Sfx::at(Sound::EnemyPain, eye));
             } else {
                 sfx.write(Sfx::at(Sound::RocketFire, eye));
                 // fan of three bolts
-                for off in [-0.12f32, 0.0, 0.12] {
-                    let d = (to + Vec3::new(off, 0.0, 0.0)).normalize_or_zero();
-                    spawn_projectile(commands, gfx, ProjKind::Bolt, muzzle, d, false, Some(self_e));
+                if !disarmed {
+                    for off in [-0.12f32, 0.0, 0.12] {
+                        let d = (to + Vec3::new(off, 0.0, 0.0)).normalize_or_zero();
+                        spawn_projectile(commands, gfx, ProjKind::Bolt, muzzle, d, false, Some(self_e));
+                    }
                 }
             }
         }
@@ -541,6 +572,6 @@ fn resolve_grunt_shot(
     draw_tracer(commands, gfx, eye, eye + dir * end_t);
 
     if hit_t.is_some() {
-        dmg.write(DamageEvent { target: player_e, amount: damage, source: Some(self_e), knockback: dir * 2.0 });
+        dmg.write(DamageEvent::body(player_e, damage, Some(self_e), dir * 2.0));
     }
 }

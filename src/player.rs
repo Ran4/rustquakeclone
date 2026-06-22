@@ -213,14 +213,14 @@ pub(crate) fn player_move(
     keys: Res<ButtonInput<KeyCode>>,
     colliders: Res<WorldColliders>,
     active: Res<crate::vehicle::ActiveVehicle>,
-    mut q: Query<(&mut Transform, &mut Player, &mut Knockback)>,
+    mut q: Query<(&mut Transform, &mut Player, &mut Knockback, &mut crate::weapons::Grapple)>,
     mut sfx: MessageWriter<Sfx>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
     }
-    let Ok((mut tf, mut p, mut kb)) = q.single_mut() else { return };
+    let Ok((mut tf, mut p, mut kb, mut grap)) = q.single_mut() else { return };
 
     // While driving a vehicle, WASD/Space belong to the truck — the player just
     // stands on the deck (carried by `vehicle_carry`) but still falls/collides.
@@ -258,8 +258,18 @@ pub(crate) fn player_move(
     let on_ground = p.on_ground;
     let half = Vec3::from_array(PLAYER_HALF);
 
+    // A taut grapple keeps the player on "air" physics even when a low swing arc
+    // grazes the floor: otherwise on_ground flips true at the bottom of the arc,
+    // skipping the gravity that drives the pendulum and frictioning away the
+    // swing's momentum (it would feel like the rope hit sludge near the ground).
+    let grappling_taut = grap.hook.as_ref().map_or(false, |h| {
+        (h.anchor - tf.translation).length() > h.len + GRAPPLE_SLACK
+    });
+
     if on_ground {
-        vel = friction(vel, dt);
+        if !grappling_taut {
+            vel = friction(vel, dt);
+        }
         if !driving && keys.pressed(KeyCode::Space) {
             vel.y = JUMP_SPEED;
             p.on_ground = false;
@@ -287,24 +297,74 @@ pub(crate) fn player_move(
     // Accelerate toward wishdir (ground vs air-cap gives strafe-jumping feel).
     // Run also scales AIR_ACCEL — snappier air control toward the same AIR_CAP
     // ceiling, so the air-strafe skill curve is preserved, just quicker.
-    let (accel, wishspeed) = if p.on_ground {
+    let (accel, wishspeed) = if p.on_ground && !grappling_taut {
         (GROUND_ACCEL * run_mul, MAX_GROUND_SPEED * run_mul)
     } else {
         (AIR_ACCEL * run_mul, AIR_CAP)
     };
     vel = accelerate(vel, wishdir, wishspeed, accel, dt);
 
-    if !p.on_ground {
+    if !p.on_ground || grappling_taut {
         vel.y -= GRAVITY * dt;
         // Cap terminal velocity so a long drop is a steady plunge, not a
         // runaway accelerating blur (lets you track the world receding above).
         vel.y = vel.y.max(-TERMINAL_VELOCITY);
     }
 
+    // --- grapnel rope: one-sided distance constraint on the swing pivot ------
+    // Layered after gravity/air-accel and before the swept solver, so the
+    // pendulum is driven by the velocity already built this frame while the
+    // solver still owns position (the constraint only edits `vel`, never `tf`).
+    if let Some(hook) = grap.hook.as_mut() {
+        let center = tf.translation;
+        // Reel-in: hold the reel key to climb toward the anchor. The one-sided
+        // rope only ever REMOVES outward velocity, so shortening the radius alone
+        // can't move you in — we inject the inward pull as velocity (which the
+        // rope leaves untouched) and let the rope length track the closing
+        // distance, floored at GRAPPLE_MIN_LEN so you never reel your face into
+        // the anchored wall and the rope never goes slack-then-snaps.
+        let to = hook.anchor - center;
+        let dist = to.length();
+        if keys.pressed(crate::weapons::GRAPPLE_REEL_KEY) && dist > GRAPPLE_EPS {
+            let inward = to / dist;
+            if dist > GRAPPLE_MIN_LEN {
+                // Pull toward the anchor at up to the reel speed.
+                let cur_in = vel.dot(inward);
+                if cur_in < GRAPPLE_REEL_SPEED {
+                    vel += inward * (GRAPPLE_REEL_SPEED - cur_in);
+                }
+                hook.len = (dist - GRAPPLE_REEL_SPEED * dt).max(GRAPPLE_MIN_LEN);
+            } else {
+                // Reached the min-length floor: arrest any residual inward drift so
+                // we settle here instead of coasting on into the anchor (the
+                // one-sided rope can't stop inward motion, so we must).
+                let cur_in = vel.dot(inward);
+                if cur_in > 0.0 {
+                    vel -= inward * cur_in;
+                }
+            }
+        }
+        vel = crate::weapons::rope_constrain(center, vel, hook.anchor, hook.len);
+    }
+
     let incoming_vy = vel.y;
     let res = move_and_slide(tf.translation, half, vel, dt, &colliders.solids, STEP_HEIGHT);
     tf.translation = res.pos;
     p.vel = res.vel;
+
+    // Stuck watchdog: only count frames toward a detach when we're genuinely
+    // pinned — a real wall contact THIS frame, the rope taut, and nearly stopped.
+    // A free-air dangle or a gentle swing hits none of those (no wall), so it can
+    // hang/swing indefinitely; only grinding a corner trips it. grapple_cast drops
+    // the rope once the count tops GRAPPLE_STUCK_FRAMES.
+    if let Some(hook) = grap.hook.as_mut() {
+        let taut = (hook.anchor - res.pos).length() > hook.len + GRAPPLE_SLACK;
+        if taut && res.hit_wall && res.vel.length_squared() < 1.0 {
+            hook.stuck_frames += 1;
+        } else {
+            hook.stuck_frames = 0;
+        }
+    }
 
     let was = on_ground;
     p.on_ground = res.on_ground;

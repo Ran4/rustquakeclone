@@ -1,0 +1,15 @@
+# 48. Updrafts & Gales — Wind That Shoves Everything
+
+> A thermal off the lava lifts you a storey. A crosswind in the gorge nudges your rocket — and your truck — off line.
+
+**The idea** — Directional force volumes: an `Aabb` you author anywhere that adds a steady acceleration to *everything* inside it. A lava-fed thermal pushes straight up so you ride it like a soft elevator; a gorge crosswind on level 8 shoves sideways; a hive vent gusts gibs and bolts down a tunnel. The force is constant, soft and always-on — it doesn't trigger or fade, it's just a region of the world where "down" gains a sideways or upward companion. Crucially it acts on the player, on every projectile, on flying gibs, on walking monsters *and* on the truck, so the room itself becomes a force you negotiate.
+
+**Why it's fresh** — Quake's air is a vacuum: your velocity is yours alone. A persistent directional current that bends a rocket in flight, slews a truck off its line and lets you *climb a column of rising air* is environmental physics the genre simply doesn't do. Wind-corrected aiming and updraft traversal turn the level's empty space into terrain.
+
+**How it plays** — You learn to read the flow ribbons and pre-aim into the wind, leading a rocket so the crosswind walks it back onto the Scrag. You hop into a thermal to reach a ledge no jump could touch, fighting your air-strafe against the lift. Driving the dam, a gust on the spillway means you steer slightly upwind or get scraped into the rail — and the gusts shove charging Knights around too, so a gale is cover.
+
+**How it fits QUAKECLONE** — It's almost pure composition. `gamestate.rs` already overlap-tests hazard `Aabb` volumes against the player box every frame, so a wind field is the same test that instead adds a per-frame impulse to `Player.vel` in `player.rs` (the same vector friction, air-accel and the air-strafe cap already integrate). The identical containment check feeds the body velocities in `projectiles.rs` and the gib/particle bodies in `effects.rs`, and applies to monster motion in `enemies.rs` and the truck's real velocity vector in `vehicle.rs` — wind shoves them all uniformly. Authoring is one `b.wind(aabb, accel)` call on the `level.rs` Build API, and `effects.rs` particles drifting along the accel vector visualise the current; it stacks cleanly with the grapple, wall-run and tide ideas.
+
+**Build sketch** — A `WindField { aabb, accel }` resource list; one shared `apply_wind(pos, vel, dt)` helper that the player, projectile, gib, monster and truck integrators each call before their own `move_and_slide`. Spawn a slow particle stream per field so the flow is legible. The honest hard part is tuning and parity: a force gentle enough to feel like a *current* not a catapult, and applied identically across five different integrators (and clamped on the lighter projectiles so a rocket isn't blown straight back into your face).
+
+**Effort** — **S.** Main risk: tuning the force to read as a current not a catapult, and wiring it uniformly through the player, projectile, gib, monster and truck integrators.

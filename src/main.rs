@@ -109,9 +109,11 @@ fn main() {
         .init_resource::<LevelStyle>()
         .init_resource::<LevelIntro>()
         .init_resource::<Sounds>()
+        .init_resource::<LimbBoxes>()
         // messages
         .add_message::<DamageEvent>()
         .add_message::<ExplosionEvent>()
+        .add_message::<SeverEvent>()
         .add_message::<ImpactEvent>()
         .add_message::<Sfx>()
         .add_message::<ScreenShake>()

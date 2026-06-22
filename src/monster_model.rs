@@ -15,18 +15,52 @@
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::{PI, TAU};
 
-use crate::enemies::Enemy;
+use crate::common::{tune::GRAVITY, *};
+use crate::effects::{spawn_blood, spawn_gibs};
+use crate::enemies::{kind_pitch, Enemy};
 use crate::level::MonsterKind;
+use crate::physics::{ray_aabb, Aabb};
+use crate::player::PlayerCamera;
+
+/// Limb world-AABBs are only rebuilt for monsters within this distance of the
+/// camera (beyond it the broad body Hurtbox still lands hits — you just can't
+/// surgically dismember a monster too far to aim a bone on).
+const LIMB_BOX_MAX_DIST: f32 = 60.0;
+
+/// The 8 corners of the unit cube, for transforming a local AABB to world.
+const CORNERS: [Vec3; 8] = [
+    Vec3::new(-1.0, -1.0, -1.0),
+    Vec3::new(1.0, -1.0, -1.0),
+    Vec3::new(-1.0, 1.0, -1.0),
+    Vec3::new(1.0, 1.0, -1.0),
+    Vec3::new(-1.0, -1.0, 1.0),
+    Vec3::new(1.0, -1.0, 1.0),
+    Vec3::new(-1.0, 1.0, 1.0),
+    Vec3::new(1.0, 1.0, 1.0),
+];
 
 pub struct MonsterModelPlugin;
 impl Plugin for MonsterModelPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MonsterTextures>()
             .add_systems(Startup, load_monster_textures)
-            .add_systems(Update, (animate_monsters, animate_death));
+            .add_systems(Update, (animate_monsters, animate_death))
+            // Rebuild the shared limb hitboxes once per frame before any weapon
+            // reads them. (Runs in Update using last frame's propagated bone
+            // GlobalTransforms — a cosmetically-irrelevant 1-frame pose lag; there
+            // is no way to read same-frame propagation from Update.)
+            .add_systems(
+                Update,
+                rebuild_limb_boxes
+                    .before(crate::weapons::fire_weapon)
+                    .before(crate::projectiles::projectile_move)
+                    .before(crate::combat::handle_explosions)
+                    .run_if(in_state(GameState::Playing)),
+            )
+            .add_systems(Update, update_limb_gibs.run_if(in_state(GameState::Playing)));
     }
 }
 
@@ -211,6 +245,177 @@ pub struct MonsterMats(pub Vec<(Handle<StandardMaterial>, LinearRgba)>);
 pub struct Dying {
     pub t: f32,
     pub yaw: f32,
+}
+
+// ----------------------------------------------------------------------------
+// Dismemberment: per-bone hurtboxes, limb pools, sever + gibs.
+// ----------------------------------------------------------------------------
+
+/// On every bone joint (alongside `Bone`). Carries the bone's limb group and its
+/// LOCAL-space hit half-extents + center, so the per-frame world-AABB build is
+/// pure transform math (no mesh access at runtime).
+#[derive(Component, Clone, Copy)]
+pub struct BoneHurt {
+    pub group: LimbGroup,
+    pub local_center: Vec3,
+    pub local_half: Vec3,
+}
+
+/// On the subtree-root bone of each SEVERABLE group (one per present group).
+/// Lets `do_sever` hide the whole subtree and clone a gib in one op.
+#[derive(Component)]
+pub struct LimbRoot {
+    pub owner: Entity,
+    pub group: LimbGroup,
+    pub mesh: Option<Handle<Mesh>>,
+}
+
+/// Marker on a severed bone (and its descendants): excluded from `animate_monsters`
+/// and the limb-box rebuild.
+#[derive(Component)]
+pub struct Severed;
+
+/// Per-group sever pool, on the Enemy root. `max[g]==0` => the kind has no such
+/// group (or it's the never-severing torso).
+#[derive(Component)]
+pub struct Limbs {
+    pub max: [f32; LimbGroup::COUNT],
+    pub taken: [f32; LimbGroup::COUNT],
+    pub severed: [bool; LimbGroup::COUNT],
+}
+impl Limbs {
+    pub fn is_severed(&self, g: LimbGroup) -> bool {
+        self.severed[g.idx()]
+    }
+}
+
+/// Cripple flags the AI/anim read, on the Enemy root. Derived at sever time so the
+/// AI never scans the pool array.
+#[derive(Component, Default, Clone, Copy)]
+pub struct Crippled {
+    pub disarmed: bool, // weapon (right) arm gone
+    pub legs_lost: u8,  // 0 / 1 / 2
+    pub head_gone: bool, // boss only (normals die outright on head sever)
+    pub grounded: bool, // Scrag wing gone
+}
+
+/// A detached limb tumbling as a gib (separate, unparented world entity).
+#[derive(Component)]
+pub struct LimbGib {
+    pub vel: Vec3,
+    pub spin: Vec3,
+    pub life: f32,
+}
+
+/// Conservative local-space half-extents of a bone shape (encloses the mesh).
+fn shape_half(s: &Shape) -> Vec3 {
+    match *s {
+        Shape::Box(h) => h,
+        Shape::Sphere(r) => Vec3::splat(r),
+        Shape::Cone { r, h } => Vec3::new(r, h * 0.5, r),
+        Shape::Capsule { r, len } => Vec3::new(r, len * 0.5 + r, r),
+        Shape::Limb { r0, r1, len } => {
+            let r = r0.max(r1);
+            Vec3::new(r, len * 0.5, r)
+        }
+        Shape::Claw { r, len, bend } => Vec3::new(r, len * 0.5, r + bend.abs()),
+    }
+}
+
+/// The group a bone *seeds* from its own role. `Torso` here means "inherit from
+/// my parent" (resolved by the structural walk in `build_monster_visual`), since
+/// most weapon-arm subtree bones are tagged `Static`.
+fn group_of(role: AnimRole) -> LimbGroup {
+    use AnimRole::*;
+    use LimbGroup as G;
+    match role {
+        Head | Jaw => G::Head,
+        ThighL | ShinL | FootL => G::LegL,
+        ThighR | ShinR | FootR => G::LegR,
+        UpperArmL | ForearmL => G::ArmL,
+        UpperArmR | ForearmR | WeaponArm => G::ArmR,
+        WingL | WingR => G::WingL,
+        Pelvis | Torso | Chest | Tail | Cape | Static => G::Torso,
+    }
+}
+
+/// Damage required to sever a group, per kind (tuned ~0.45-0.6x body HP so chip
+/// damage won't dismember but focused fire will). 0 = no such group / not severable.
+fn limb_max(kind: MonsterKind, g: LimbGroup) -> f32 {
+    use LimbGroup::*;
+    use MonsterKind::*;
+    match (kind, g) {
+        (Grunt, Head) => 16.0,
+        (Grunt, ArmL) => 16.0,
+        (Grunt, ArmR) => 14.0,
+        (Grunt, LegL | LegR) => 18.0,
+        (Enforcer, Head) => 28.0,
+        (Enforcer, ArmL) => 26.0,
+        (Enforcer, ArmR) => 24.0,
+        (Enforcer, LegL | LegR) => 30.0,
+        (Knight, Head) => 30.0,
+        (Knight, ArmL) => 26.0,
+        (Knight, ArmR) => 28.0,
+        (Knight, LegL | LegR) => 32.0,
+        (Scrag, Head) => 24.0,
+        (Scrag, ArmL) => 22.0,
+        (Scrag, ArmR) => 22.0,
+        (Scrag, WingL) => 20.0,
+        (Ogre, Head) => 110.0,
+        (Ogre, ArmL) => 90.0,
+        (Ogre, ArmR) => 80.0,
+        (Ogre, LegL | LegR) => 100.0,
+        (DeathKnight, Head) => 180.0,
+        (DeathKnight, ArmL) => 140.0,
+        (DeathKnight, ArmR) => 130.0,
+        (DeathKnight, LegL | LegR) => 150.0,
+        _ => 0.0,
+    }
+}
+
+/// Pour `dmg` into a limb pool. Returns true EXACTLY once — the hit that empties
+/// it (so a sever fires a single time). Pure + headless-testable.
+pub fn accrue(taken: &mut f32, max: f32, severed: &mut bool, dmg: f32) -> bool {
+    if *severed || max <= 0.0 {
+        return false;
+    }
+    *taken += dmg.max(0.0);
+    if *taken >= max {
+        *severed = true;
+        true
+    } else {
+        false
+    }
+}
+
+/// Move-speed multiplier from how many legs are gone (0 -> full, 1 -> half, 2 -> crawl).
+pub fn cripple_speed(legs_lost: u8) -> f32 {
+    match legs_lost {
+        0 => 1.0,
+        1 => 0.5,
+        _ => 0.15,
+    }
+}
+
+/// Nearest limb-box hit along a ray within `max_t`. Pure (no ECS). `pad` grows
+/// each box (used by the melee whip's forgiving reach).
+pub fn nearest_limb_hit(
+    origin: Vec3,
+    dir: Vec3,
+    max_t: f32,
+    boxes: &[(Entity, LimbGroup, Aabb)],
+    pad: f32,
+) -> Option<(Entity, LimbGroup, f32, Vec3)> {
+    let mut best_t = max_t;
+    let mut best = None;
+    for &(e, g, bb) in boxes {
+        let b = if pad > 0.0 { bb.expand(Vec3::splat(pad)) } else { bb };
+        if let Some((t, n)) = ray_aabb(origin, dir, best_t, &b) {
+            best_t = t;
+            best = Some((e, g, t, n));
+        }
+    }
+    best
 }
 
 // ----------------------------------------------------------------------------
@@ -436,32 +641,55 @@ pub fn build_monster_visual(
     tex: &MonsterTextures,
     kind: MonsterKind,
     root: Entity,
-) -> Vec<(Handle<StandardMaterial>, LinearRgba)> {
+) -> (Vec<(Handle<StandardMaterial>, LinearRgba)>, Limbs) {
     let rig = rig_for(kind);
     let mut name_to_e: HashMap<&'static str, Entity> = HashMap::new();
+    let mut name_to_group: HashMap<&'static str, LimbGroup> = HashMap::new();
+    let mut seen_groups: HashSet<LimbGroup> = HashSet::new();
+    let mut present: HashSet<LimbGroup> = HashSet::new();
     let mut mats = Vec::new();
     for spec in &rig {
         let parent_e = spec
             .parent
             .and_then(|n| name_to_e.get(n).copied())
             .unwrap_or(root);
+        // Structural group: a bone's own role seeds its group; a Torso seed
+        // inherits the parent's group (so a Static weapon-arm bone joins ArmR,
+        // and an eye/fang Static bone joins Head). Parents precede children in
+        // the rig list, so the parent's group is already resolved.
+        let own = group_of(spec.anim);
+        let group = if own != LimbGroup::Torso {
+            own
+        } else {
+            spec.parent.and_then(|p| name_to_group.get(p).copied()).unwrap_or(LimbGroup::Torso)
+        };
+        name_to_group.insert(spec.name, group);
+        present.insert(group);
+
         let base_rot = Quat::from_euler(
             EulerRot::XYZ,
             spec.rot_deg.x.to_radians(),
             spec.rot_deg.y.to_radians(),
             spec.rot_deg.z.to_radians(),
         );
+        let mesh = make_mesh(meshes, &spec.shape);
+        let bonehurt = BoneHurt { group, local_center: spec.mesh_off, local_half: shape_half(&spec.shape) };
         let joint = commands
             .spawn((
                 ChildOf(parent_e),
                 Transform::from_translation(spec.pos).with_rotation(base_rot),
                 Visibility::default(),
                 Bone { owner: root, role: spec.anim, base_rot, base_pos: spec.pos },
+                bonehurt,
             ))
             .id();
+        // The first bone of a severable group is its subtree root (parents first).
+        if group.severable() && !seen_groups.contains(&group) {
+            seen_groups.insert(group);
+            commands.entity(joint).insert(LimbRoot { owner: root, group, mesh: Some(mesh.clone()) });
+        }
         name_to_e.insert(spec.name, joint);
 
-        let mesh = make_mesh(meshes, &spec.shape);
         let (mat, base_em) = make_material(materials, tex, kind, spec);
         mats.push((mat.clone(), base_em));
         commands.spawn((
@@ -471,7 +699,14 @@ pub fn build_monster_visual(
             Transform::from_translation(spec.mesh_off),
         ));
     }
-    mats
+    let mut max = [0.0f32; LimbGroup::COUNT];
+    for g in &present {
+        if g.severable() {
+            max[g.idx()] = limb_max(kind, *g);
+        }
+    }
+    let limbs = Limbs { max, taken: [0.0; LimbGroup::COUNT], severed: [false; LimbGroup::COUNT] };
+    (mats, limbs)
 }
 
 // ----------------------------------------------------------------------------
@@ -480,7 +715,7 @@ pub fn build_monster_visual(
 fn animate_monsters(
     time: Res<Time>,
     q_owner: Query<(&Enemy, Option<&Dying>)>,
-    mut q_bone: Query<(&Bone, &mut Transform)>,
+    mut q_bone: Query<(&Bone, &mut Transform), Without<Severed>>,
 ) {
     let t = time.elapsed_secs();
     for (bone, mut tf) in &mut q_bone {
@@ -591,6 +826,121 @@ fn animate_death(
             tf.translation.y -= dt * 0.5; // sink into the floor before vanishing
         }
         if d.t > 6.0 {
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+/// Rebuild the shared per-frame limb hitbox list from live bone transforms. Only
+/// awake, alive, non-dying, in-range monsters contribute; severed bones are
+/// excluded by the `Without<Severed>` filter.
+fn rebuild_limb_boxes(
+    mut out: ResMut<LimbBoxes>,
+    cam: Query<&GlobalTransform, With<PlayerCamera>>,
+    q_owner: Query<(Entity, &GlobalTransform, &Enemy), (With<Health>, Without<Dying>)>,
+    q_bone: Query<(&Bone, &BoneHurt, &GlobalTransform), Without<Severed>>,
+) {
+    out.boxes.clear();
+    let cam_pos = cam.iter().next().map(|g| g.translation());
+    let mut live: HashSet<Entity> = HashSet::new();
+    for (e, gt, en) in &q_owner {
+        if !en.awake {
+            continue;
+        }
+        if let Some(cp) = cam_pos {
+            if gt.translation().distance(cp) > LIMB_BOX_MAX_DIST {
+                continue;
+            }
+        }
+        live.insert(e);
+    }
+    for (bone, bh, gt) in &q_bone {
+        if !live.contains(&bone.owner) {
+            continue;
+        }
+        let mut lo = Vec3::splat(f32::MAX);
+        let mut hi = Vec3::splat(f32::MIN);
+        for c in CORNERS {
+            let p = gt.transform_point(bh.local_center + c * bh.local_half);
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        out.boxes.push((bone.owner, bh.group, Aabb { min: lo, max: hi }));
+    }
+}
+
+/// Recursively tag a severed bone's descendants `Severed` so the animator and box
+/// rebuild skip them (the subtree is also hidden via inherited Visibility).
+fn mark_descendants_severed(commands: &mut Commands, children: &Query<&Children>, e: Entity) {
+    if let Ok(kids) = children.get(e) {
+        for &c in kids {
+            commands.entity(c).insert(Severed);
+            mark_descendants_severed(commands, children, c);
+        }
+    }
+}
+
+/// React to a `SeverEvent`: flag the AI cripple, hide the limb subtree, spawn a
+/// tumbling gib at the bone, and play blood + a crunch. Runs in the combat chain
+/// after `apply_damage` and before `check_deaths`.
+pub fn do_sever(
+    mut commands: Commands,
+    mut reader: MessageReader<SeverEvent>,
+    mut q_root: Query<(&mut Crippled, &Enemy)>,
+    q_limbroot: Query<(Entity, &LimbRoot, &GlobalTransform)>,
+    children: Query<&Children>,
+    gfx: Res<GfxAssets>,
+    mut sfx: MessageWriter<Sfx>,
+) {
+    for ev in reader.read() {
+        let Ok((mut cr, en)) = q_root.get_mut(ev.root) else {
+            continue;
+        };
+        match ev.limb {
+            LimbGroup::ArmR => cr.disarmed = true,
+            LimbGroup::LegL | LimbGroup::LegR => cr.legs_lost = (cr.legs_lost + 1).min(2),
+            LimbGroup::Head => cr.head_gone = true,
+            LimbGroup::WingL => cr.grounded = true,
+            _ => {}
+        }
+        let kind = en.kind;
+        for (be, lr, gt) in &q_limbroot {
+            if lr.owner != ev.root || lr.group != ev.limb {
+                continue;
+            }
+            commands.entity(be).insert((Visibility::Hidden, Severed));
+            mark_descendants_severed(&mut commands, &children, be);
+            let wt = gt.translation();
+            let mesh = lr.mesh.clone().unwrap_or_else(|| gfx.small_sphere.clone());
+            commands.spawn((
+                Mesh3d(mesh),
+                MeshMaterial3d(gfx.gib.clone()),
+                Transform::from_translation(wt),
+                LimbGib { vel: ev.dir * 6.0 + Vec3::Y * 4.0, spin: Vec3::new(7.0, 5.0, 9.0), life: 5.0 },
+                LevelEntity,
+            ));
+            break;
+        }
+        spawn_blood(&mut commands, &gfx, ev.at, ev.dir);
+        sfx.write(Sfx::pitched(Sound::Sever, ev.at, kind_pitch(kind)));
+    }
+}
+
+/// Tumble detached limb gibs under gravity; burst into small gibs when they expire.
+fn update_limb_gibs(
+    mut commands: Commands,
+    time: Res<Time>,
+    gfx: Res<GfxAssets>,
+    mut q: Query<(Entity, &mut Transform, &mut LimbGib)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut tf, mut g) in &mut q {
+        g.vel.y -= GRAVITY * dt;
+        tf.translation += g.vel * dt;
+        tf.rotation *= Quat::from_scaled_axis(g.spin * dt);
+        g.life -= dt;
+        if g.life <= 0.0 {
+            spawn_gibs(&mut commands, &gfx, tf.translation, 4);
             commands.entity(e).despawn();
         }
     }
@@ -796,4 +1146,71 @@ fn rig_deathknight() -> Vec<BoneSpec> {
         BoneSpec { name: "shinR", parent: Some("thighR"), shape: Shape::Limb { r0: 0.16, r1: 0.1, len: 0.5 }, pos: Vec3::new(0.0, -0.52, 0.02), mesh_off: Vec3::new(0.0, -0.25, 0.0), rot_deg: Vec3::new(8.0, 0.0, 0.0), tex: TexId::ArmorSecondary, tint: [0.15, 0.13, 0.15], emissive: [0.5, 0.04, 0.02], anim: AnimRole::ShinR },
         BoneSpec { name: "footR", parent: Some("shinR"), shape: Shape::Box(Vec3::new(0.13, 0.07, 0.25)), pos: Vec3::new(0.0, -0.52, -0.06), mesh_off: Vec3::new(0.0, 0.0, -0.08), rot_deg: Vec3::new(0.0, 0.0, 0.0), tex: TexId::ArmorSecondary, tint: [0.14, 0.12, 0.14], emissive: [0.4, 0.03, 0.01], anim: AnimRole::FootR },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The weapon arm (and its Static sub-bones) must map to ArmR, so severing it
+    /// disarms — this is the structural-walk's whole reason to exist.
+    #[test]
+    fn weapon_arm_maps_to_armr() {
+        assert_eq!(group_of(AnimRole::WeaponArm), LimbGroup::ArmR);
+        assert_eq!(group_of(AnimRole::UpperArmR), LimbGroup::ArmR);
+        assert_eq!(group_of(AnimRole::ForearmR), LimbGroup::ArmR);
+    }
+
+    /// The torso is the only never-severing group.
+    #[test]
+    fn torso_is_never_severable() {
+        assert!(!LimbGroup::Torso.severable());
+        assert!(LimbGroup::ArmR.severable() && LimbGroup::Head.severable());
+        assert_eq!(group_of(AnimRole::Pelvis), LimbGroup::Torso);
+        assert_eq!(group_of(AnimRole::Static), LimbGroup::Torso); // seed; inherits via the walk
+    }
+
+    /// A pool severs on exactly the hit that empties it — never twice.
+    #[test]
+    fn accrue_severs_exactly_once() {
+        let (mut taken, mut sev) = (0.0f32, false);
+        assert!(!accrue(&mut taken, 20.0, &mut sev, 12.0)); // 12/20
+        assert!(accrue(&mut taken, 20.0, &mut sev, 12.0)); // 24/20 -> sever
+        assert!(!accrue(&mut taken, 20.0, &mut sev, 99.0)); // already severed
+        // A group the kind doesn't have (max 0) never severs.
+        let (mut t2, mut s2) = (0.0f32, false);
+        assert!(!accrue(&mut t2, 0.0, &mut s2, 100.0));
+    }
+
+    /// Nearest-hit picks the closer of two stacked boxes and the pad rescues a near miss.
+    #[test]
+    fn nearest_limb_hit_picks_closest_and_respects_pad() {
+        let near = Aabb::from_center_half(Vec3::new(0.0, 0.0, 2.0), Vec3::splat(0.5));
+        let far = Aabb::from_center_half(Vec3::new(0.0, 0.0, 6.0), Vec3::splat(0.5));
+        let e = Entity::PLACEHOLDER;
+        let boxes = [(e, LimbGroup::Head, near), (e, LimbGroup::Torso, far)];
+        let hit = nearest_limb_hit(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), 20.0, &boxes, 0.0);
+        assert_eq!(hit.map(|h| h.1), Some(LimbGroup::Head));
+        // A ray that just misses (0.6 off-axis, box half 0.5) connects only with pad.
+        let off = [(e, LimbGroup::Head, Aabb::from_center_half(Vec3::new(0.6, 0.0, 3.0), Vec3::splat(0.5)))];
+        assert!(nearest_limb_hit(Vec3::ZERO, Vec3::Z, 20.0, &off, 0.0).is_none());
+        assert!(nearest_limb_hit(Vec3::ZERO, Vec3::Z, 20.0, &off, 0.2).is_some());
+    }
+
+    /// shape_half encloses the extreme local vertices of the awkward shapes.
+    #[test]
+    fn shape_half_encloses_limb_and_claw() {
+        let limb = shape_half(&Shape::Limb { r0: 0.2, r1: 0.1, len: 0.5 });
+        assert!(limb.x >= 0.2 && limb.y >= 0.25); // widest radius + half length
+        let claw = shape_half(&Shape::Claw { r: 0.08, len: 0.6, bend: 0.4 });
+        assert!(claw.z >= 0.08 + 0.4); // base radius + full bend reach
+    }
+
+    /// Leg loss halves then crawls.
+    #[test]
+    fn cripple_speed_halves_then_crawls() {
+        assert_eq!(cripple_speed(0), 1.0);
+        assert_eq!(cripple_speed(1), 0.5);
+        assert!(cripple_speed(2) < 0.2);
+    }
 }
