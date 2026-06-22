@@ -148,6 +148,9 @@ pub struct Enemy {
     pub gait: f32,
     /// Attack animation envelope (1 at strike, decays to 0) driving the weapon arm.
     pub atk_anim: f32,
+    /// Cooldown gating how often a vehicle ram can re-hit this monster (so one
+    /// pass-through deals a single hit, not one per frame of overlap).
+    pub ram_cd: f32,
 }
 
 struct MStats {
@@ -231,6 +234,7 @@ pub fn spawn_monster(
                 windup: 0.0,
                 gait: 0.0,
                 atk_anim: 0.0,
+                ram_cd: 0.0,
             },
             Health::new(s.health),
             Faction::Monster,

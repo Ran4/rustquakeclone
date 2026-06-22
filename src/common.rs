@@ -227,6 +227,11 @@ pub enum Sound {
     Ambient,
     Lightning,
     Whip,
+    EngineLoop,
+    EngineStart,
+    TireScreech,
+    Crash,
+    RamHit,
 }
 impl Sound {
     pub fn file(self) -> &'static str {
@@ -256,16 +261,22 @@ impl Sound {
             Sound::Ambient => "sounds/ambient.wav",
             Sound::Lightning => "sounds/lightning.wav",
             Sound::Whip => "sounds/whip.wav",
+            // ElevenLabs-generated vehicle sounds (scripts/generate_sounds.py).
+            Sound::EngineLoop => "sounds/engine_loop.wav",
+            Sound::EngineStart => "sounds/engine_start.wav",
+            Sound::TireScreech => "sounds/tire_screech.wav",
+            Sound::Crash => "sounds/crash.wav",
+            Sound::RamHit => "sounds/ram_hit.wav",
         }
     }
-    pub fn all() -> [Sound; 25] {
+    pub fn all() -> [Sound; 30] {
         use Sound::*;
         [
             Shotgun, SuperShotgun, Nailgun, RocketFire, GrenadeFire, Explosion,
             GrenadeBounce, Impact, PickupHealth, PickupArmor, PickupAmmo,
             PickupWeapon, KeyPickup, Jump, Land, PlayerPain, PlayerDeath,
             EnemySight, EnemyPain, EnemyDeath, Door, Victory, Ambient, Lightning,
-            Whip,
+            Whip, EngineLoop, EngineStart, TireScreech, Crash, RamHit,
         ]
     }
 }

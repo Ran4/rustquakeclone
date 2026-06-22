@@ -17,7 +17,16 @@ real clang plays on a solid crash). Tire grip bleeds the sideways slide away ove
 truck normally tracks where it points but skids and recovers after a bonk. Anything standing on the
 bed — you *or a monster* — rides along with it; there are no side-rails, so friction is all that
 keeps you aboard. Take a corner too hard, or get spun by a crash, and you can be flung off. You can
-still aim and fire while you drive.
+still aim and fire while you drive. And you can **ram monsters**: plough into one at speed and it
+takes a meaty hit and gets flung aside — fast enough and you pulp it under the wheels.
+
+**It sounds like a truck, too.** Take the wheel and the engine **turns over** and settles into an
+**idle**; throttle up and it **revs** — a single looping engine note whose pitch and volume the game
+scrubs from idle burble to a redline "vroom" as the revs climb (it'll even rev in place while you
+hold the throttle against a wall). Corner hard or get spun by a crash and the **tyres screech** —
+a second loop faded in by how much the truck is sliding sideways. A solid wall hit **clangs**
+(louder and deeper the harder you hit), and ramming a monster lands a meaty **thud**. The looping
+engine and tyre sounds start when you take the wheel and stop the instant you step out (or die).
 
 Under the hood the truck carries a real velocity vector and an angular velocity rather than a
 forward-only scalar, so a wall can throw its momentum any direction. It reserves one slot in the

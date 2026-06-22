@@ -7,7 +7,14 @@ rustc-ice-*.txt
 
 # Procedurally generated sound effects — synthesized at startup by
 # audio_gen::generate(), so they are build artifacts, not source.
-/assets/sounds/
+# The ElevenLabs-generated vehicle sounds (scripts/generate_sounds.py) are NOT
+# reproducible without an API key, so they are committed (re-included below).
+/assets/sounds/*
+!/assets/sounds/engine_loop.wav
+!/assets/sounds/engine_start.wav
+!/assets/sounds/tire_screech.wav
+!/assets/sounds/crash.wav
+!/assets/sounds/ram_hit.wav
 
 # Local secrets (OpenAI API key used to generate monster textures)
 .env

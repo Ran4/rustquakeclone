@@ -130,6 +130,22 @@ armor and the key stay flat-shaded so the glowing accents read at a glance.
 
 See `.claude/rules/generating_images.md`
 
+### Generating sounds
+
+Most SFX are synthesised in `src/audio_gen.rs`, but the vehicle sounds want real recorded-sounding
+audio, so they're rendered with ElevenLabs by one idempotent script — the registry of every such
+sound:
+
+```
+uv run scripts/generate_sounds.py          # render anything whose WAV is missing
+uv run scripts/generate_sounds.py --list   # show what exists vs. is missing
+uv run scripts/generate_sounds.py --force  # re-render everything
+```
+
+It reads `ELEVENLABS_API_KEY` from the env or `.env`, transcodes the result to mono WAV with
+`ffmpeg`, and writes to `assets/sounds/`. These WAVs are committed (unlike the procedural ones,
+which are gitignored build artifacts) because they're not reproducible without the key.
+
 ## What makes it feel like Quake
 
 - **Movement physics**: friction + ground/air acceleration with the classic air-strafe speed cap,
@@ -138,8 +154,10 @@ See `.claude/rules/generating_images.md`
 - **Crunchy combat**: hitscan + projectiles, radius splash with falloff and knockback, blood, gibs,
   expanding fireballs, dynamic muzzle/explosion lights, screen shake, view bob, weapon kick, damage flash.
 - **Atmosphere**: dark brush-built level, distance fog, HDR + bloom on emissive lava/lights, point lights.
-- **Procedural audio**: all 23 sound effects are synthesised at startup (no binary assets) into
-  `assets/sounds/` and loaded by Bevy.
+- **Procedural audio**: the core sound effects are synthesised at startup (no binary assets) into
+  `assets/sounds/` and loaded by Bevy. The truck's engine, tyre screech and crash/ram hits are the
+  one exception — recorded-sounding clips generated with ElevenLabs (see *Generating sounds*) and
+  committed to the repo.
 
 ## Architecture (single crate, `src/`)
 

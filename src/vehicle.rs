@@ -18,6 +18,7 @@
 
 use std::f32::consts::FRAC_PI_2;
 
+use bevy::audio::Volume;
 use bevy::prelude::*;
 
 use crate::common::{tune::{GRAVITY, PLAYER_HALF}, *};
@@ -58,11 +59,43 @@ const SPIN_DECAY: f32 = 2.5; // 1/s: how fast a collision spin winds down
 const MAX_SPIN: f32 = 3.5; // rad/s cap on collision spin
 const BONK_SPEED: f32 = 8.0; // impact speed (m/s) above which a crash plays a sound
 
+// -- ramming monsters --------------------------------------------------------
+const RAM_MIN_SPEED: f32 = 5.0; // min truck speed (m/s) to deal a ram hit
+const RAM_CD: f32 = 0.5; // seconds before the same monster can be rammed again
+
+// -- engine + tyre audio -----------------------------------------------------
+// The engine is a single looping sample whose playback speed (pitch) and volume
+// the driver scrubs from idle to redline by "RPM" (forward speed + throttle), so
+// one clip covers idle burble → revving "vroom". The tyre screech is a second
+// loop kept silent until lateral slip (a hard cornering/crash skid) fades it in.
+const ENGINE_IDLE_PITCH: f32 = 0.55; // playback speed at idle (0 RPM)
+const ENGINE_MAX_PITCH: f32 = 1.95; // playback speed at redline (full RPM)
+const ENGINE_IDLE_VOL: f32 = 0.22; // volume at idle
+const ENGINE_MAX_VOL: f32 = 0.6; // volume at redline
+const ENGINE_THROTTLE_REV: f32 = 0.4; // RPM bump while throttle is held (rev in place)
+const ENGINE_SMOOTH: f32 = 6.0; // 1/s: how fast engine pitch/volume chase the target
+const TIRE_MAX_VOL: f32 = 0.6; // screech volume at full slip
+const TIRE_SLIP_ON: f32 = 3.0; // lateral slip (m/s) where the screech starts
+const TIRE_SLIP_FULL: f32 = 11.0; // lateral slip (m/s) at full screech volume
+const TIRE_MIN_SPEED: f32 = 4.0; // need to be rolling this fast to screech at all
+const TIRE_ATTACK: f32 = 14.0; // 1/s: fast screech fade-in
+const TIRE_RELEASE: f32 = 6.0; // 1/s: slower screech fade-out
+
 /// Which vehicle the player is currently driving (`None` = on foot). A resource
 /// rather than a marker component so `player_move` and `vehicle_drive` both see
 /// the change the same frame, with no command-buffer latency.
 #[derive(Resource, Default)]
 pub struct ActiveVehicle(pub Option<Entity>);
+
+/// The single looping engine-note audio entity (only present while driving). Its
+/// [`AudioSink`] speed/volume are scrubbed each frame to track engine RPM.
+#[derive(Component)]
+struct EngineSound;
+
+/// The single looping tyre-screech audio entity (only present while driving).
+/// Kept silent and faded in by lateral slip when cornering/crashing hard.
+#[derive(Component)]
+struct TireSound;
 
 /// A drivable vehicle. The entity's `Transform.translation` is its ground point
 /// (centre of the footprint, at floor level); `yaw` is its heading.
@@ -89,18 +122,21 @@ impl Plugin for VehiclePlugin {
         app.init_resource::<ActiveVehicle>()
             .add_systems(
                 Update,
-                (vehicle_activate, vehicle_drive, vehicle_carry)
+                (vehicle_activate, vehicle_drive, vehicle_carry, vehicle_ram, vehicle_audio)
                     .chain()
                     // After look so the carry's yaw add lands on the freshly
                     // mouse-updated heading; before move so the player's own
-                    // collision resolves on the already-carried position.
+                    // collision resolves on the already-carried position. Ram +
+                    // audio trail the drive so they read the freshly integrated
+                    // velocity.
                     .after(crate::player::player_look)
                     .before(crate::player::player_move)
                     .run_if(in_state(GameState::Playing)),
             )
             // The driven vehicle is a LevelEntity (despawned on rebuild); drop the
-            // dangling handle so a fresh level never starts in a phantom "driving".
-            .add_systems(OnExit(GameState::Playing), |mut a: ResMut<ActiveVehicle>| a.0 = None);
+            // dangling handle so a fresh level never starts in a phantom "driving",
+            // and silence the looping engine/tyre sounds on death/victory/exit.
+            .add_systems(OnExit(GameState::Playing), cleanup_vehicle_audio);
     }
 }
 
@@ -150,6 +186,25 @@ fn ride(rider: Vec3, half_y: f32, t: Vec3, yaw: f32, delta: Vec3, dyaw: f32) -> 
     let nx = ocx + (r0x * cd + r0z * sd) + delta.x;
     let nz = ocz + (-r0x * sd + r0z * cd) + delta.z;
     Some(Vec3::new(nx, rider.y + delta.y, nz))
+}
+
+/// Whether a monster at `enemy` (centre) with half-extents `ehalf` is overlapping
+/// the truck *body* at `t`/`yaw` — i.e. the truck is driving into it. Same local-
+/// frame footprint test as [`ride`], grown by the monster's plan radius, plus a
+/// vertical band so we hit grounded/low monsters with the body but not flyers
+/// hovering well above the deck.
+fn rammed(enemy: Vec3, ehalf: Vec3, t: Vec3, yaw: f32) -> bool {
+    let (s, c) = yaw.sin_cos();
+    let (rx, rz) = (enemy.x - t.x, enemy.z - t.z);
+    let lx = rx * c - rz * s;
+    let lz = rx * s + rz * c;
+    let r = ehalf.x.max(ehalf.z);
+    if lx.abs() > HALF_W + r || lz.abs() > HALF_L + r {
+        return false;
+    }
+    let elow = enemy.y - ehalf.y;
+    let ehigh = enemy.y + ehalf.y;
+    elow < t.y + BODY_H + 0.5 && ehigh > t.y - 0.3
 }
 
 fn coast(speed: f32, dt: f32) -> f32 {
@@ -313,7 +368,7 @@ fn vehicle_activate(
         if on_deck && near {
             active.0 = Some(e);
             notify.write(Notify::new("Driving — W/S throttle, A/D steer, E to exit"));
-            sfx.write(Sfx::at(Sound::Door, vtf.translation));
+            sfx.write(Sfx::at(Sound::EngineStart, vtf.translation));
             break;
         }
     }
@@ -409,7 +464,14 @@ fn vehicle_drive(
         };
         yaw_rate = (yaw_rate + dyaw_rate).clamp(-MAX_SPIN, MAX_SPIN);
         if impact > BONK_SPEED {
-            sfx.write(Sfx::at(Sound::Impact, new_t));
+            // Louder + a touch deeper the harder the clang (capped at full blast).
+            let over = (impact - BONK_SPEED) / 24.0;
+            sfx.write(Sfx {
+                sound: Sound::Crash,
+                pos: Some(new_t),
+                volume: (0.45 + over).clamp(0.45, 1.0),
+                pitch: (1.05 - over * 0.3).clamp(0.8, 1.05),
+            });
         }
 
         let out_vy = if res.on_ground { 0.0 } else { res.vel.y };
@@ -455,6 +517,147 @@ fn vehicle_carry(
                 etf.translation = np;
             }
         }
+    }
+}
+
+/// Ram monsters with a moving truck: a head-on impact at speed deals damage and
+/// a meaty knockback (and plays a thud), so you can plough a Knight off the deck
+/// or pulp a Grunt under the wheels. A per-monster cooldown makes one pass-through
+/// a single hit rather than one hit per overlapping frame.
+fn vehicle_ram(
+    time: Res<Time>,
+    q_veh: Query<(&Transform, &Vehicle)>,
+    mut q_enemy: Query<(Entity, &Transform, &mut Enemy, &Health), Without<Vehicle>>,
+    mut dmg: MessageWriter<DamageEvent>,
+    mut sfx: MessageWriter<Sfx>,
+) {
+    let dt = time.delta_secs();
+    // Recover ram cooldowns first so a monster becomes rammable again after RAM_CD.
+    for (_, _, mut en, _) in &mut q_enemy {
+        if en.ram_cd > 0.0 {
+            en.ram_cd = (en.ram_cd - dt).max(0.0);
+        }
+    }
+    for (vtf, v) in &q_veh {
+        let planar = Vec3::new(v.vel.x, 0.0, v.vel.z);
+        let speed = planar.length();
+        if speed < RAM_MIN_SPEED {
+            continue;
+        }
+        let dir = planar / speed;
+        let t = vtf.translation;
+        for (e, etf, mut en, hp) in &mut q_enemy {
+            if hp.dead || en.ram_cd > 0.0 || !rammed(etf.translation, en.half, t, v.yaw) {
+                continue;
+            }
+            en.ram_cd = RAM_CD;
+            let amount = (speed * 2.0).clamp(15.0, 90.0);
+            let knockback = dir * (speed * 0.6).clamp(7.0, 24.0) + Vec3::Y * 5.0;
+            dmg.write(DamageEvent { target: e, amount, source: None, knockback });
+            sfx.write(Sfx::at(Sound::RamHit, etf.translation));
+        }
+    }
+}
+
+/// Drive the engine + tyre loops for the truck you're in. Spawns the two looping
+/// audio entities on first frame of driving and despawns them when you step out;
+/// while driving it scrubs the engine's pitch/volume by RPM and fades the tyre
+/// screech in/out by lateral slip. Engine RPM is forward speed plus a bump while
+/// the throttle is held (so it revs even stalled against a wall).
+fn vehicle_audio(
+    mut commands: Commands,
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    active: Res<ActiveVehicle>,
+    sounds: Res<Sounds>,
+    q_veh: Query<&Vehicle>,
+    // `AudioSink` is inserted a frame or two after the entity spawns, so make it
+    // optional: `Err` = no sound entity yet (spawn one), `Ok(None)` = spawned but
+    // the sink isn't live yet (wait), `Ok(Some)` = live (drive it).
+    mut q_engine: Query<Option<&mut AudioSink>, (With<EngineSound>, Without<TireSound>)>,
+    mut q_tire: Query<Option<&mut AudioSink>, (With<TireSound>, Without<EngineSound>)>,
+    loops: Query<Entity, Or<(With<EngineSound>, With<TireSound>)>>,
+) {
+    let dt = time.delta_secs();
+    let Some(ve) = active.0 else {
+        // Not driving: stop both loops.
+        for e in &loops {
+            commands.entity(e).despawn();
+        }
+        return;
+    };
+    let Ok(v) = q_veh.get(ve) else { return };
+
+    // --- engine RPM from forward speed (+ throttle bump) ---------------------
+    let fwd = forward(v.yaw);
+    let planar = Vec3::new(v.vel.x, 0.0, v.vel.z);
+    let fs = planar.dot(fwd);
+    let throttle = keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::KeyS);
+    let mut rpm = (fs.abs() / MAX_SPEED).clamp(0.0, 1.0);
+    if throttle {
+        rpm = (rpm + ENGINE_THROTTLE_REV).min(1.0);
+    }
+    let target_pitch = ENGINE_IDLE_PITCH + (ENGINE_MAX_PITCH - ENGINE_IDLE_PITCH) * rpm;
+    let target_vol = ENGINE_IDLE_VOL + (ENGINE_MAX_VOL - ENGINE_IDLE_VOL) * rpm;
+
+    match q_engine.single_mut() {
+        Ok(Some(mut sink)) => {
+            let k = 1.0 - (-ENGINE_SMOOTH * dt).exp();
+            let p = sink.speed();
+            sink.set_speed(p + (target_pitch - p) * k);
+            let cv = sink.volume().to_linear();
+            sink.set_volume(Volume::Linear(cv + (target_vol - cv) * k));
+        }
+        Ok(None) => {} // entity spawned, sink not live yet
+        Err(_) => {
+            commands.spawn((
+                AudioPlayer::new(sounds.get(Sound::EngineLoop)),
+                PlaybackSettings::LOOP
+                    .with_volume(Volume::Linear(ENGINE_IDLE_VOL))
+                    .with_speed(ENGINE_IDLE_PITCH),
+                EngineSound,
+                Name::new("EngineSound"),
+            ));
+        }
+    }
+
+    // --- tyre screech from lateral slip -------------------------------------
+    let lateral = (planar - fwd * fs).length();
+    let tire_target = if planar.length() > TIRE_MIN_SPEED {
+        ((lateral - TIRE_SLIP_ON) / (TIRE_SLIP_FULL - TIRE_SLIP_ON)).clamp(0.0, 1.0) * TIRE_MAX_VOL
+    } else {
+        0.0
+    };
+    match q_tire.single_mut() {
+        Ok(Some(mut sink)) => {
+            let cv = sink.volume().to_linear();
+            let rate = if tire_target > cv { TIRE_ATTACK } else { TIRE_RELEASE };
+            let k = 1.0 - (-rate * dt).exp();
+            sink.set_volume(Volume::Linear(cv + (tire_target - cv) * k));
+        }
+        Ok(None) => {} // entity spawned, sink not live yet
+        Err(_) => {
+            commands.spawn((
+                AudioPlayer::new(sounds.get(Sound::TireScreech)),
+                PlaybackSettings::LOOP.with_volume(Volume::Linear(0.0)),
+                TireSound,
+                Name::new("TireSound"),
+            ));
+        }
+    }
+}
+
+/// On leaving `Playing` (death/victory/level change): clear the driving handle so
+/// a fresh level never starts in a phantom truck, and despawn the looping engine/
+/// tyre sounds so they don't drone on over the death/victory screen.
+fn cleanup_vehicle_audio(
+    mut active: ResMut<ActiveVehicle>,
+    mut commands: Commands,
+    loops: Query<Entity, Or<(With<EngineSound>, With<TireSound>)>>,
+) {
+    active.0 = None;
+    for e in &loops {
+        commands.entity(e).despawn();
     }
 }
 
@@ -506,5 +709,43 @@ mod tests {
         assert_eq!(impact, 0.0);
         assert_eq!(dyaw, 0.0);
         assert!((out - drive).length() < 1e-6);
+    }
+
+    // --- ram overlap (vehicle_ram) -----------------------------------------
+    const EHALF: Vec3 = Vec3::new(0.5, 0.9, 0.5); // a typical grounded monster
+
+    /// A grounded monster squarely in front of the truck is rammed.
+    #[test]
+    fn rams_monster_in_front() {
+        let truck = Vec3::ZERO; // yaw 0 → forward -Z
+        let enemy = Vec3::new(0.0, 0.9, -2.0); // ahead, on the deck-height band
+        assert!(rammed(enemy, EHALF, truck, 0.0));
+    }
+
+    /// A monster off to the side, clear of the footprint, is not rammed.
+    #[test]
+    fn no_ram_when_clear_to_the_side() {
+        let truck = Vec3::ZERO;
+        let enemy = Vec3::new(5.0, 0.9, 0.0); // well outside HALF_W + plan radius
+        assert!(!rammed(enemy, EHALF, truck, 0.0));
+    }
+
+    /// A Scrag hovering well above the truck body passes over it, not rammed.
+    #[test]
+    fn no_ram_for_flyer_above_the_body() {
+        let truck = Vec3::ZERO;
+        let enemy = Vec3::new(0.0, 3.0, -2.0); // centred above, feet at 2.1 > body top
+        assert!(!rammed(enemy, EHALF, truck, 0.0));
+    }
+
+    /// The footprint rotates with the truck: a monster off the +X axis is rammed
+    /// once the truck is yawed 90° to face it.
+    #[test]
+    fn ram_footprint_follows_yaw() {
+        let truck = Vec3::ZERO;
+        let enemy = Vec3::new(-2.0, 0.9, 0.0); // beside the unturned truck (along its short axis)
+        assert!(!rammed(enemy, EHALF, truck, 0.0), "beyond the short half-width when unturned");
+        // Yaw +90°: the long axis now lies along world X, so the same monster is in reach.
+        assert!(rammed(enemy, EHALF, truck, FRAC_PI_2));
     }
 }
