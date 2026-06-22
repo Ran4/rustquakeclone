@@ -1,7 +1,7 @@
-# QUAKECLONE — *Seven Dimensions*
+# QUAKECLONE — *Eight Dimensions*
 
-A seven-level, Quake-flavoured first-person shooter written from scratch in **Rust + Bevy 0.19**.
-WASD + mouse, Quake-style movement physics, seven weapons, six monster types, seven hand-built brush
+An eight-level, Quake-flavoured first-person shooter written from scratch in **Rust + Bevy 0.19**.
+WASD + mouse, Quake-style movement physics, seven weapons, six monster types, eight hand-built brush
 maps each with its own theme, key-locked doors, environmental hazards, gibs, explosions and a
 procedurally-synthesised sound set — it boots straight into the campaign and each level plays through
 in a few minutes.
@@ -27,7 +27,7 @@ startup (omit any field to keep its default):
     width: 1280,        // window size, used only when fullscreen is false
     height: 720,
     vsync: true,        // false → uncap the frame rate (watch the fps meter, top-left)
-    start_level: 1,         // 1–7 to always start on that level (default 1), "random" for a random one each run
+    start_level: 1,         // 1–8 to always start on that level (default 1), "random" for a random one each run
 )
 ```
 
@@ -48,7 +48,7 @@ if it's missing or malformed the defaults above apply.
 
 ## The campaign
 
-Seven self-contained dimensions, each a hand-built brush map with its own theme, textures, fog,
+Eight self-contained dimensions, each a hand-built brush map with its own theme, textures, fog,
 lighting and hazard. Every level is the same Quake loop — **grab the Silver Key → open the locked
 door → reach the exit slipgate** — but the world around it changes completely:
 
@@ -63,8 +63,14 @@ door → reach the exit slipgate** — but the world around it changes completel
    pulsating egg chambers, a Queen's nest.
 6. **The Salt Wraith** — a sci-fi sky-pirate galleon among the clouds; open decks, plank bridges
    over a plasma-engine void, masts and energy sails, a captain's cabin vault.
-7. **Sanctum of the Void** — the cosmic finale; floating obsidian islands and glowing crystal
+7. **Sanctum of the Void** — the cosmic sanctum; floating obsidian islands and glowing crystal
    bridges over a lethal void rift, a Death Knight boss guarding the key.
+8. **The Drowned Colossus** — the finale and a deliberate big-space stress test; you fight along the
+   crest of a colossal concrete dam. The crest is a convex arch that bulges toward the gorge, so the
+   span, the spillway gate-houses and the staggered control piers reveal the dam a reach at a time
+   rather than all at once. The reservoir is held high on one side; the face drops ~70m into a
+   turbine-discharge gorge on the other (a fatal fall either way). The Silver Key sits in a mid-span
+   intake control house; a Death Knight holds the locked flood-gate before the exit.
 
 - **A fresh run starts on level 1** (set `start_level` in `config.ron` to a fixed level or `"random"`).
   Finish a level and you carry your weapons, ammo, health and armor straight into the next one; finish
@@ -157,7 +163,7 @@ to introduce a new texture; delete a PNG to regenerate it.
 | `itemshot.rs` | `QC_ITEMSHOT=1` debug mode: render each pickup solo and screenshot it |
 | `pickups.rs` | Health, armor, ammo, weapons, key (every pickup is a little hand-built low-poly model) |
 | `level.rs` | Themed material palettes, the `Build` level-authoring API, level registry + dispatch |
-| `levels/` | One module per level (`level1`..`level7`) — each a `build(&mut Build)` map |
+| `levels/` | One module per level (`level1`..`level8`) — each a `build(&mut Build)` map |
 | `levelshot.rs` | `QC_LEVELSHOT=1` debug mode: build each level and screenshot its entry view |
 | `gamestate.rs` | Objective, doors, hazards, exit→next-level / win, death/victory, restart |
 | `hud.rs` | Crosshair, status, objective, flash, notifications, level banner |
@@ -171,6 +177,10 @@ ambient light and hazard styling.
 
 Run `QC_AUTOTEST=1 cargo run` to launch a self-driving smoke test (the player walks forward and
 fires while logging position/health) — handy for headless validation.
+
+Run `QC_FPSLOG=1 cargo run` to log frame-time/fps to the console once a second (Bevy's frame
+diagnostics) — handy for the big level-8 dam, the deliberate large-space stress test. Set
+`vsync: false` in `config.ron` first to uncap the frame rate.
 
 Run `QC_GALLERY=1 cargo run` to spawn each monster in turn, lit and centered, and save a close-up
 `gallery_<n>_<kind>.png` of every model — handy for eyeballing the rigs and textures.

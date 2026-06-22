@@ -169,6 +169,14 @@ fn main() {
             .add_systems(Update, (autotest_drive, autotest_log).run_if(in_state(GameState::Playing)));
     }
 
+    // Optional frame-time logging (handy for the big level-8 stress test).
+    if std::env::var("QC_FPSLOG").is_ok() {
+        app.add_plugins((
+            bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
+            bevy::diagnostic::LogDiagnosticsPlugin::default(),
+        ));
+    }
+
     // Optional one-shot screenshot: capture the live game (HUD + level banner)
     // a couple seconds into Playing, then exit. `QC_SHOT=name` sets the file.
     if std::env::var("QC_SHOT").is_ok() {

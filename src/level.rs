@@ -259,6 +259,7 @@ pub enum ThemeId {
     Hive,
     Pirate,
     Void,
+    Dam,
 }
 
 /// The resolved material handles + styling for a level.
@@ -421,6 +422,21 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             clear: rgb(0.01, 0.0, 0.03),
             hazard_dot: 26.0,
             hazard_flash: rgb(0.7, 0.3, 1.0),
+        },
+        Dam => ThemeSpec {
+            dir: "textures/world/dam",
+            tint: Color::WHITE,
+            hazard_emissive: LinearRgba::rgb(0.4, 1.1, 1.6),
+            hazard_rough: 0.15,
+            accent: (rgb(0.4, 0.8, 1.0), LinearRgba::rgb(0.8, 1.8, 3.2)),
+            // A vast, hazy daylight vista — the fog reaches very far so the dam's
+            // far reach, the gorge floor and the reservoir all recede into haze
+            // instead of hard-clipping. This is the level built to stress big space.
+            fog: (rgb(0.66, 0.72, 0.80), 40.0, 230.0),
+            ambient: (rgb(0.70, 0.76, 0.86), 360.0),
+            clear: rgb(0.55, 0.63, 0.72),
+            hazard_dot: 8.0,
+            hazard_flash: rgb(0.5, 0.7, 0.95),
         },
     }
 }

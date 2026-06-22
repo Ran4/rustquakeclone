@@ -187,6 +187,23 @@ THEMES: list[Image] = (
         "door": "Heavy galleon hatch of brass-bound dark oak planks with a ship's "
         "wheel and iron studs.",
     })
+    # --- The Drowned Colossus: a colossal concrete dam ---
+    + _theme("dam", {
+        "floor": "Poured-concrete dam roadway deck, broad board-formed grey "
+        "slabs split by tarred expansion joints, faint tyre scuffs and pale "
+        "water stains, top-down.",
+        "wall": "Massive poured-concrete dam face, vertical board-form panel "
+        "lines and grids of tie-bolt holes, pale weathered grey concrete with "
+        "damp seepage streaks and white lime efflorescence.",
+        "ceiling": "Dark grey concrete soffit underside with board-form lines "
+        "and rusty rebar-stain bleeds, plain and shadowed.",
+        "trim": "Yellow-and-black industrial hazard-stripe steel guard panel, "
+        "scratched safety paint over riveted galvanised steel.",
+        "hazard": "Churning aerated spillway water, turbulent white-cyan foam "
+        "and froth over deep blue-green water, top-down.",
+        "door": "Heavy riveted steel sluice flood-gate, grey-painted plate with "
+        "vertical stiffener ribs, big bolt rows and a hoist chain, industrial.",
+    })
     # --- Sanctum of the Void: the cosmic crystal endgame ---
     + _theme("void", {
         "floor": "Polished black obsidian floor shot through with glowing violet "

@@ -14,6 +14,7 @@ pub mod level4;
 pub mod level5;
 pub mod level6;
 pub mod level7;
+pub mod level8;
 
 /// Display name + theme for each level, indexed by level number.
 pub const LEVEL_META: [(&str, ThemeId); NUM_LEVELS] = [
@@ -24,6 +25,7 @@ pub const LEVEL_META: [(&str, ThemeId); NUM_LEVELS] = [
     ("The Verdant Rot", ThemeId::Hive),
     ("The Salt Wraith", ThemeId::Pirate),
     ("Sanctum of the Void", ThemeId::Void),
+    ("The Drowned Colossus", ThemeId::Dam),
 ];
 
 /// Build the level with the given index into the supplied context.
@@ -36,6 +38,7 @@ pub fn build_index(idx: usize, b: &mut Build) {
         4 => level5::build(b),
         5 => level6::build(b),
         6 => level7::build(b),
+        7 => level8::build(b),
         _ => level1::build(b),
     }
 }
