@@ -790,6 +790,14 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
         self.plan.exit = Some(pos);
     }
 
+    /// A drivable truck sitting at `pos` (ground level) facing `yaw`. Spawns the
+    /// model and reserves its moving footprint collider — see `crate::vehicle`.
+    pub fn vehicle(&mut self, pos: Vec3, yaw: f32) {
+        crate::vehicle::spawn_truck(
+            &mut *self.commands, &mut *self.meshes, &mut *self.materials, &mut *self.colliders, pos, yaw,
+        );
+    }
+
     /// An emissive "slipgate"/portal slab using the theme accent material.
     pub fn slipgate(&mut self, min: Vec3, max: Vec3) {
         let accent = self.theme.accent.clone();

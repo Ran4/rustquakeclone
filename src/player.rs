@@ -158,7 +158,7 @@ pub fn spawn_player(
         });
 }
 
-fn player_look(
+pub(crate) fn player_look(
     motion: Res<AccumulatedMouseMotion>,
     windows: Query<&CursorOptions, With<PrimaryWindow>>,
     mut q_root: Query<(&mut Player, &mut Transform), Without<PlayerCamera>>,
@@ -208,10 +208,11 @@ pub fn grab_cursor(mut windows: Query<&mut CursorOptions, With<PrimaryWindow>>) 
     }
 }
 
-fn player_move(
+pub(crate) fn player_move(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     colliders: Res<WorldColliders>,
+    active: Res<crate::vehicle::ActiveVehicle>,
     mut q: Query<(&mut Transform, &mut Player, &mut Knockback)>,
     mut sfx: MessageWriter<Sfx>,
 ) {
@@ -221,6 +222,10 @@ fn player_move(
     }
     let Ok((mut tf, mut p, mut kb)) = q.single_mut() else { return };
 
+    // While driving a vehicle, WASD/Space belong to the truck — the player just
+    // stands on the deck (carried by `vehicle_carry`) but still falls/collides.
+    let driving = active.0.is_some();
+
     // Consume any accumulated knockback (rocket jumps, enemy hits).
     if kb.0 != Vec3::ZERO {
         p.vel += kb.0;
@@ -228,19 +233,21 @@ fn player_move(
         p.on_ground = false;
     }
 
-    // Desired direction from WASD, relative to current yaw.
+    // Desired direction from WASD, relative to current yaw (suppressed while driving).
     let mut wish = Vec2::ZERO;
-    if keys.pressed(KeyCode::KeyW) {
-        wish.y += 1.0;
-    }
-    if keys.pressed(KeyCode::KeyS) {
-        wish.y -= 1.0;
-    }
-    if keys.pressed(KeyCode::KeyD) {
-        wish.x += 1.0;
-    }
-    if keys.pressed(KeyCode::KeyA) {
-        wish.x -= 1.0;
+    if !driving {
+        if keys.pressed(KeyCode::KeyW) {
+            wish.y += 1.0;
+        }
+        if keys.pressed(KeyCode::KeyS) {
+            wish.y -= 1.0;
+        }
+        if keys.pressed(KeyCode::KeyD) {
+            wish.x += 1.0;
+        }
+        if keys.pressed(KeyCode::KeyA) {
+            wish.x -= 1.0;
+        }
     }
     let (s, c) = p.yaw.sin_cos();
     let forward = Vec3::new(-s, 0.0, -c);
@@ -253,12 +260,12 @@ fn player_move(
 
     if on_ground {
         vel = friction(vel, dt);
-        if keys.pressed(KeyCode::Space) {
+        if !driving && keys.pressed(KeyCode::Space) {
             vel.y = JUMP_SPEED;
             p.on_ground = false;
             sfx.write(Sfx::global(Sound::Jump));
         }
-    } else if keys.just_pressed(KeyCode::Space) {
+    } else if !driving && keys.just_pressed(KeyCode::Space) {
         // Wall jump: a fresh jump press while airborne, if we're up against a
         // wall, kicks off it — an upward boost plus a push away from the wall.
         if let Some(n) = nearby_wall_normal(tf.translation, half, &colliders.solids, WALLJUMP_REACH) {
@@ -274,7 +281,7 @@ fn player_move(
     }
 
     // Hold Shift to run: a flat speed-up of the ground movement (no stamina).
-    let run = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let run = !driving && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
     let run_mul = if run { RUN_MULTIPLIER } else { 1.0 };
 
     // Accelerate toward wishdir (ground vs air-cap gives strafe-jumping feel).

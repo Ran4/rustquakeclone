@@ -23,6 +23,7 @@ mod physics;
 mod pickups;
 mod player;
 mod projectiles;
+mod vehicle;
 mod weapons;
 
 use bevy::asset::AssetPlugin;
@@ -128,6 +129,7 @@ fn main() {
             monster_model::MonsterModelPlugin,
             pickups::PickupsPlugin,
             gamestate::GameStatePlugin,
+            vehicle::VehiclePlugin,
             audio::AudioPlugin,
         ));
 

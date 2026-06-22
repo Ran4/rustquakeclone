@@ -43,6 +43,7 @@ if it's missing or malformed the defaults above apply.
 | Look / aim        | **Mouse** |
 | Fire              | **Left Mouse** (hold for automatic weapons) |
 | Select weapon     | **1–7** or **mouse wheel** |
+| Enter / exit vehicle | **E** (while standing on the driver spot) |
 | Restart (on death / victory) | **R** |
 | Release cursor    | **Esc** |
 
@@ -70,7 +71,8 @@ door → reach the exit slipgate** — but the world around it changes completel
    span, the spillway gate-houses and the staggered control piers reveal the dam a reach at a time
    rather than all at once. The reservoir is held high on one side; the face drops ~70m into a
    turbine-discharge gorge on the other (a fatal fall either way). The Silver Key sits in a mid-span
-   intake control house; a Death Knight holds the locked flood-gate before the exit.
+   intake control house; a Death Knight holds the locked flood-gate before the exit. A **drivable
+   flatbed truck** is parked on the entry terrace (see *Vehicles* below) — hop in and floor it.
 
 - **A fresh run starts on level 1** (set `start_level` in `config.ron` to a fixed level or `"random"`).
   Finish a level and you carry your weapons, ammo, health and armor straight into the next one; finish
@@ -91,6 +93,29 @@ door → reach the exit slipgate** — but the world around it changes completel
 Ammo types: Shells, Nails, Rockets, Cells. The Whip needs none — it's the always-available
 melee fallback (and a handy way to shove a charging Knight off you). Armor (green/yellow) absorbs a
 fraction of damage.
+
+## Vehicles
+
+A **flatbed truck** sits on the spawn terrace of **level 8**. It's a hand-built low-poly model with
+an open cab and a flat, wall-less bed. The deck is a *moving solid surface*: jump up onto the bed,
+walk to the open cab, and press **E** on the driver spot to take the wheel —
+
+| Action  | Key |
+|---------|-----|
+| Throttle | **W** |
+| Brake / reverse | **S** |
+| Steer left / right | **A** / **D** |
+| Leave the truck | **E** |
+
+Steering only bites while you're moving (and reverses when you back up), and the truck stops dead
+against walls and rails like any other brush. Anything standing on the bed — you *or a monster* —
+rides along with it; there are no side-rails, so friction is all that keeps you aboard. Take a
+corner too hard and you can be flung off. You can still aim and fire while you drive.
+
+Under the hood the truck reserves one slot in the world collider list and rewrites it every frame
+from its transform (the same trick the sliding doors use for a moving brush), so the player's
+collision, the monsters' pathing, hitscan and line-of-sight all treat it as solid for free. A
+per-frame "carry" step slides every rider along with the deck's motion and rotation.
 
 ## Monsters
 
@@ -155,6 +180,7 @@ to introduce a new texture; delete a PNG to regenerate it.
 | `physics.rs` | Swept-AABB move-and-slide, step-up, ground probe, raycasts |
 | `player.rs` | Spawn, mouse-look, Quake movement, cursor grab |
 | `weapons.rs` | Inventory, firing (hitscan/projectile), switching, view-model |
+| `vehicle.rs` | Drivable vehicles: moving-brush collider, driving physics, rider carry |
 | `projectiles.rs` | Rockets, grenades, nails, enemy bolts |
 | `combat.rs` | Damage, armor, explosions, death, gibs |
 | `enemies.rs` | Monster spawning + AI state machine + attacks |

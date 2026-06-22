@@ -256,6 +256,10 @@ pub fn build(b: &mut Build) {
     b.item(ItemKind::Shells(20), Vec3::new(4.0, 0.7, 58.0));
     b.light(Vec3::new(7.0, 5.0, 60.0), rgb(1.0, 0.9, 0.7), 600_000.0, 30.0);
 
+    // A drivable flatbed truck parked on the terrace, facing south down the dam.
+    // Jump onto the bed, walk to the open cab and press E to take the wheel.
+    b.vehicle(Vec3::new(7.0, 0.0, 47.0), 0.0);
+
     // ====================================================================
     // SOUTH POWERHOUSE TERRACE (exit) — reaching the slipgate wins the campaign.
     // ====================================================================
