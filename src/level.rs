@@ -205,6 +205,9 @@ pub enum MonsterKind {
     Scrag,
     Ogre,
     DeathKnight,
+    /// A low, wide spider that spins walkable silk strands (see `crate::web`).
+    /// Killing a Weaver drops the strand it anchors, so anything riding it falls.
+    Weaver,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -795,6 +798,20 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
     pub fn vehicle(&mut self, pos: Vec3, yaw: f32) {
         crate::vehicle::spawn_truck(
             &mut *self.commands, &mut *self.meshes, &mut *self.materials, &mut *self.colliders, pos, yaw,
+        );
+    }
+
+    /// Place a Weaver spider guarding a walkable silk strand from anchor `a` to
+    /// anchor `b` (anchors are top-surface points on the two ledges). The strand
+    /// is solid & walkable while the Weaver lives; kill it and the strand drops,
+    /// pulling anything riding it into the void. `weaver_pos` is where the spider
+    /// spawns — place it at/near anchor `a` so the strand can adopt it. See
+    /// `crate::web`.
+    pub fn weaver(&mut self, weaver_pos: Vec3, a: Vec3, b: Vec3) {
+        self.monster(MonsterKind::Weaver, weaver_pos); // normal plan spawn (counted)
+        crate::web::spawn_strand(
+            &mut *self.commands, &mut *self.meshes, &mut *self.materials, &mut *self.colliders,
+            weaver_pos, a, b,
         );
     }
 

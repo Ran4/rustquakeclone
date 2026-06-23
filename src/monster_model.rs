@@ -139,6 +139,7 @@ fn skin_of(kind: MonsterKind) -> TexFile {
         Scrag => TexFile::ScragFlesh,
         Ogre => TexFile::OgreHide,
         DeathKnight => TexFile::DkArmor,
+        Weaver => TexFile::OgreHide, // dark chitinous hide (reused, no new image)
     }
 }
 /// The detail/armor texture used for the slot-1 "ArmorSecondary" role of each kind.
@@ -151,6 +152,7 @@ fn armor_of(kind: MonsterKind) -> TexFile {
         Scrag => TexFile::ScragMembrane,
         Ogre => TexFile::OgreApron,
         DeathKnight => TexFile::DkCloth,
+        Weaver => TexFile::ScragMembrane, // translucent web/membrane sheen (reused)
     }
 }
 
@@ -959,6 +961,7 @@ fn rig_for(kind: MonsterKind) -> Vec<BoneSpec> {
         Scrag => rig_scrag(),
         Ogre => rig_ogre(),
         DeathKnight => rig_deathknight(),
+        Weaver => rig_weaver(),
     }
 }
 
@@ -1146,6 +1149,60 @@ fn rig_deathknight() -> Vec<BoneSpec> {
         BoneSpec { name: "shinR", parent: Some("thighR"), shape: Shape::Limb { r0: 0.16, r1: 0.1, len: 0.5 }, pos: Vec3::new(0.0, -0.52, 0.02), mesh_off: Vec3::new(0.0, -0.25, 0.0), rot_deg: Vec3::new(8.0, 0.0, 0.0), tex: TexId::ArmorSecondary, tint: [0.15, 0.13, 0.15], emissive: [0.5, 0.04, 0.02], anim: AnimRole::ShinR },
         BoneSpec { name: "footR", parent: Some("shinR"), shape: Shape::Box(Vec3::new(0.13, 0.07, 0.25)), pos: Vec3::new(0.0, -0.52, -0.06), mesh_off: Vec3::new(0.0, 0.0, -0.08), rot_deg: Vec3::new(0.0, 0.0, 0.0), tex: TexId::ArmorSecondary, tint: [0.14, 0.12, 0.14], emissive: [0.4, 0.03, 0.01], anim: AnimRole::FootR },
     ]
+}
+
+/// The Weaver: a low, wide spider. A bulbous abdomen (Pelvis) trailing behind a
+/// cephalothorax (Torso/Chest) that carries the head, glowing eye cluster and
+/// chelicerae fangs. Eight two-segment legs splay out — four per side — animated
+/// by reusing the biped leg/arm roles so the walk-cycle animator wiggles them.
+/// Sits low (`half.y ≈ 0.5`) and wide. Skinned with the reused dark-chitin hide.
+fn rig_weaver() -> Vec<BoneSpec> {
+    // Tints: oily black chitin body, paler joint highlights, sickly green accents.
+    let chitin = [0.16, 0.15, 0.18];
+    let chitin_lo = [0.12, 0.11, 0.14];
+    let limb = [0.14, 0.13, 0.16];
+    // A splayed leg = thigh (out & down) + shin (down to a foot tip on the floor).
+    // `side`: +1 = left (+X), -1 = right (-X). `zoff`: front..back placement.
+    // `out`/`fwd` aim the thigh; the shin drops near-vertical to plant the foot.
+    // Names are passed as static literals (thigh/shin/foot) so no allocation/leak.
+    let leg = |thigh: &'static str, shin: &'static str, foot: &'static str,
+               side: f32, zoff: f32, out: f32, fwd: f32,
+               thigh_role: AnimRole, shin_role: AnimRole| {
+        vec![
+            BoneSpec { name: thigh, parent: Some("torso"), shape: Shape::Limb { r0: 0.075, r1: 0.05, len: 0.42 }, pos: Vec3::new(side * 0.22, 0.04, zoff), mesh_off: Vec3::new(0.0, -0.21, 0.0), rot_deg: Vec3::new(fwd, 0.0, side * out), tex: TexId::SkinPrimary, tint: limb, emissive: [0.0, 0.0, 0.0], anim: thigh_role },
+            BoneSpec { name: shin, parent: Some(thigh), shape: Shape::Limb { r0: 0.05, r1: 0.022, len: 0.44 }, pos: Vec3::new(0.0, -0.42, 0.0), mesh_off: Vec3::new(0.0, -0.22, 0.0), rot_deg: Vec3::new(0.0, 0.0, side * -(out + 36.0)), tex: TexId::SkinPrimary, tint: limb, emissive: [0.0, 0.0, 0.0], anim: shin_role },
+            BoneSpec { name: foot, parent: Some(shin), shape: Shape::Claw { r: 0.022, len: 0.12, bend: 0.04 }, pos: Vec3::new(0.0, -0.42, 0.0), mesh_off: Vec3::new(0.0, -0.06, 0.0), rot_deg: Vec3::new(170.0, 0.0, 0.0), tex: TexId::Bone, tint: [0.5, 0.48, 0.42], emissive: [0.0, 0.0, 0.0], anim: AnimRole::Static },
+        ]
+    };
+    let mut v = vec![
+        // Abdomen: a fat low sphere trailing behind, the visual hub of the spider.
+        BoneSpec { name: "pelvis", parent: None, shape: Shape::Sphere(0.42), pos: Vec3::new(0.0, 0.0, 0.34), mesh_off: Vec3::new(0.0, 0.0, 0.0), rot_deg: Vec3::new(0.0, 0.0, 0.0), tex: TexId::SkinPrimary, tint: chitin, emissive: [0.02, 0.06, 0.02], anim: AnimRole::Pelvis },
+        // A web-membrane saddle over the abdomen (reused membrane texture).
+        BoneSpec { name: "abdomenPlate", parent: Some("pelvis"), shape: Shape::Box(Vec3::new(0.3, 0.16, 0.32)), pos: Vec3::new(0.0, 0.22, 0.06), mesh_off: Vec3::new(0.0, 0.0, 0.0), rot_deg: Vec3::new(-10.0, 0.0, 0.0), tex: TexId::ArmorSecondary, tint: chitin_lo, emissive: [0.0, 0.0, 0.0], anim: AnimRole::Pelvis },
+        // Cephalothorax: the front body block the legs and head mount on.
+        BoneSpec { name: "torso", parent: Some("pelvis"), shape: Shape::Sphere(0.3), pos: Vec3::new(0.0, -0.02, -0.36), mesh_off: Vec3::new(0.0, 0.0, 0.0), rot_deg: Vec3::new(0.0, 0.0, 0.0), tex: TexId::SkinPrimary, tint: chitin, emissive: [0.0, 0.0, 0.0], anim: AnimRole::Torso },
+        BoneSpec { name: "head", parent: Some("torso"), shape: Shape::Sphere(0.18), pos: Vec3::new(0.0, -0.02, -0.26), mesh_off: Vec3::new(0.0, 0.0, 0.0), rot_deg: Vec3::new(0.0, 0.0, 0.0), tex: TexId::SkinPrimary, tint: chitin_lo, emissive: [0.0, 0.0, 0.0], anim: AnimRole::Head },
+        // Chelicerae fangs jutting down/forward from the head.
+        BoneSpec { name: "fangL", parent: Some("head"), shape: Shape::Claw { r: 0.03, len: 0.16, bend: 0.05 }, pos: Vec3::new(0.06, -0.08, -0.12), mesh_off: Vec3::new(0.0, -0.08, 0.0), rot_deg: Vec3::new(150.0, 0.0, 0.0), tex: TexId::Bone, tint: [0.55, 0.52, 0.44], emissive: [0.0, 0.0, 0.0], anim: AnimRole::Jaw },
+        BoneSpec { name: "fangR", parent: Some("head"), shape: Shape::Claw { r: 0.03, len: 0.16, bend: 0.05 }, pos: Vec3::new(-0.06, -0.08, -0.12), mesh_off: Vec3::new(0.0, -0.08, 0.0), rot_deg: Vec3::new(150.0, 0.0, 0.0), tex: TexId::Bone, tint: [0.55, 0.52, 0.44], emissive: [0.0, 0.0, 0.0], anim: AnimRole::Jaw },
+        // A cluster of glowing eyes — the unmistakable spider read.
+        BoneSpec { name: "eyeL1", parent: Some("head"), shape: Shape::Sphere(0.035), pos: Vec3::new(0.07, 0.05, -0.16), mesh_off: Vec3::new(0.0, 0.0, 0.0), rot_deg: Vec3::new(0.0, 0.0, 0.0), tex: TexId::None, tint: [0.4, 1.0, 0.4], emissive: [0.6, 7.0, 0.6], anim: AnimRole::Static },
+        BoneSpec { name: "eyeR1", parent: Some("head"), shape: Shape::Sphere(0.035), pos: Vec3::new(-0.07, 0.05, -0.16), mesh_off: Vec3::new(0.0, 0.0, 0.0), rot_deg: Vec3::new(0.0, 0.0, 0.0), tex: TexId::None, tint: [0.4, 1.0, 0.4], emissive: [0.6, 7.0, 0.6], anim: AnimRole::Static },
+        BoneSpec { name: "eyeL2", parent: Some("head"), shape: Shape::Sphere(0.022), pos: Vec3::new(0.12, 0.02, -0.14), mesh_off: Vec3::new(0.0, 0.0, 0.0), rot_deg: Vec3::new(0.0, 0.0, 0.0), tex: TexId::None, tint: [0.4, 1.0, 0.4], emissive: [0.4, 5.0, 0.4], anim: AnimRole::Static },
+        BoneSpec { name: "eyeR2", parent: Some("head"), shape: Shape::Sphere(0.022), pos: Vec3::new(-0.12, 0.02, -0.14), mesh_off: Vec3::new(0.0, 0.0, 0.0), rot_deg: Vec3::new(0.0, 0.0, 0.0), tex: TexId::None, tint: [0.4, 1.0, 0.4], emissive: [0.4, 5.0, 0.4], anim: AnimRole::Static },
+    ];
+    // Eight legs: four per side, front pair on arm roles (counter-swing), the rest
+    // on leg roles (walk cycle). Front legs reach forward, rear legs trail back.
+    use AnimRole::*;
+    v.extend(leg("thL1", "shL1", "ftL1", 1.0, -0.16, 58.0, -34.0, UpperArmL, ForearmL));
+    v.extend(leg("thL2", "shL2", "ftL2", 1.0, -0.02, 70.0, -10.0, ThighL, ShinL));
+    v.extend(leg("thL3", "shL3", "ftL3", 1.0, 0.12, 70.0, 14.0, ThighL, ShinL));
+    v.extend(leg("thL4", "shL4", "ftL4", 1.0, 0.26, 58.0, 36.0, ThighL, ShinL));
+    v.extend(leg("thR1", "shR1", "ftR1", -1.0, -0.16, 58.0, -34.0, UpperArmR, ForearmR));
+    v.extend(leg("thR2", "shR2", "ftR2", -1.0, -0.02, 70.0, -10.0, ThighR, ShinR));
+    v.extend(leg("thR3", "shR3", "ftR3", -1.0, 0.12, 70.0, 14.0, ThighR, ShinR));
+    v.extend(leg("thR4", "shR4", "ftR4", -1.0, 0.26, 58.0, 36.0, ThighR, ShinR));
+    v
 }
 
 #[cfg(test)]

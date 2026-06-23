@@ -1,7 +1,7 @@
 # QUAKECLONE — *Eight Dimensions*
 
 An eight-level, Quake-flavoured first-person shooter written from scratch in **Rust + Bevy 0.19**.
-WASD + mouse, Quake-style movement physics, seven weapons, six monster types, eight hand-built brush
+WASD + mouse, Quake-style movement physics, seven weapons, seven monster types, eight hand-built brush
 maps each with its own theme, key-locked doors, environmental hazards, gibs, explosions and a
 procedurally-synthesised sound set — it boots straight into the campaign and each level plays through
 in a few minutes.
@@ -85,7 +85,8 @@ door → reach the exit slipgate** — but the world around it changes completel
 1. **Shotgun** — hitscan, 6 pellets (starting weapon)
 2. **Super Shotgun** — hitscan, 14-pellet double blast
 3. **Nailgun** — rapid nail projectiles
-4. **Grenade Launcher** — bouncing, timed grenades with splash
+4. **Grenade Launcher** — bouncing, timed grenades with splash; *right-click lobs a **Lodestone*** — a
+   gravity-well grenade that **implodes**, dragging monsters (and loose projectiles) into a knot before it pops
 5. **Rocket Launcher** — direct + splash damage, *rocket-jump capable*
 6. **Lightning Gun** — continuous hitscan beam
 7. **Whip** — short-range melee, *uses no ammo*; flings whipped monsters back with heavy knockback
@@ -101,8 +102,17 @@ See `.claude/rules/vehicles.md`
 ## Monsters
 
 Grunt (hitscan soldier) · Enforcer (energy bolts) · Knight (fast melee) · Scrag (flying spitter) ·
-Ogre (grenade-lobbing bruiser + chainsaw) · Death Knight (mini-boss). Each has line-of-sight
-perception and an Idle → Chase → Attack AI.
+Ogre (grenade-lobbing bruiser + chainsaw) · Death Knight (mini-boss) · Weaver (venom-spitting spider
+that anchors **walkable silk-strand bridges** — kill it and its bridge vanishes, dropping anything on
+it). Each has line-of-sight perception and an Idle → Chase → Attack AI.
+
+**Hijack the horde** — crack the **Whip** across an Ogre to stagger it, then press **E** within a
+moment to vault onto its shoulders and *ride the monster itself* as a living battering ram: **W**
+charges it forward, **A/D** steer its lumbering gait, and **left mouse** swings its own chainsaw arm
+into whatever's ahead (your own guns are stowed while mounted). You ride on the Ogre's health — hits
+aimed at you drain it instead — until it dies, at which point its death-topple bucks you off. Press
+**E** to dismount early. It's the same live skeletal rig that was just fighting you, with no separate
+vehicle model.
 
 Every monster is a **procedurally-assembled skeletal model** in the angular, low-poly Quake style:
 a hierarchy of parented bone entities (pelvis → torso → head/jaw, articulated arms and legs, plus

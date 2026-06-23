@@ -259,6 +259,12 @@ fn handle_explosion_fx(
 ) {
     let ear = cam.iter().next().map(|g| g.translation()).unwrap_or(Vec3::ZERO);
     for ex in reader.read() {
+        // The Lodestone emits an implode pull event every frame for its whole fuse;
+        // that's a silent gravity well, not a detonation — no fireball/flash/shake.
+        // Only the real fuse-expiry pop (implode: false) gets the explosion visual.
+        if ex.implode {
+            continue;
+        }
         spawn_explosion_visual(&mut commands, &gfx, ex.pos, ex.radius);
         let d = ex.pos.distance(ear);
         let amt = (1.0 - d / 25.0).clamp(0.0, 1.0) * 0.6;

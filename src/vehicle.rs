@@ -347,6 +347,7 @@ pub fn spawn_truck(
 pub(crate) fn vehicle_activate(
     keys: Res<ButtonInput<KeyCode>>,
     mut active: ResMut<ActiveVehicle>,
+    mount: Res<crate::mount::ActiveMount>,
     q_player: Query<&Transform, With<Player>>,
     q_veh: Query<(Entity, &Transform, &Vehicle)>,
     mut notify: MessageWriter<Notify>,
@@ -358,6 +359,13 @@ pub(crate) fn vehicle_activate(
     if active.0.is_some() {
         active.0 = None;
         notify.write(Notify::new("Left the truck"));
+        return;
+    }
+    // Don't board a truck if this same E press just mounted (or is keeping us on) an
+    // Ogre. `mount_activate` runs before us (explicit ordering in MountPlugin), so a
+    // mount that became active this frame is already visible here — a single tap can
+    // never both mount an Ogre and board the truck.
+    if mount.0.is_some() {
         return;
     }
     let Ok(ptf) = q_player.single() else { return };

@@ -106,7 +106,20 @@ pub fn build(b: &mut Build) {
     // ===================================================================
     // OGRE ISLE  (west)  x[-44,-26] z[-22,-8]  — strong weapon: Rocket
     // ===================================================================
-    crystal_bridge_x(b, &crystal, &obsidian, -26.0, -18.0, -18.0, -12.0);
+    // A WEAVER silk strand replaces the crystal bridge to this optional loot
+    // ledge: a walkable span you can only use while the spider guarding it lives.
+    // Kill the Weaver and the strand drops — so reaching the Rocket Launcher and
+    // getting back out is a contested tightrope (the ogre isle is off the
+    // key/exit critical path, so a severed strand never blocks progression).
+    // Anchors are the ogre-isle edge (x=-26) and the hub west floor edge (x=-8),
+    // top y=0 — spanning the full void gap so the strand is flush with both island
+    // floors (mirrors the east side's full-gap crystal_bridge_x 8->26). The hub-ward
+    // end sits in the hub's west doorway (z=-15 lies inside its Wall::W z[-18,-12]).
+    b.weaver(
+        Vec3::new(-28.5, 1.0, -15.0),       // spider on the ogre-isle ledge near anchor a
+        Vec3::new(-26.0, 0.0, -15.0),       // anchor a (ogre isle edge)
+        Vec3::new(-8.0, 0.0, -15.0),        // anchor b (hub west floor edge)
+    );
     b.room(-44.0, -26.0, -22.0, -8.0, 0.0, 8.0, &[Wall::E((-18.0, -12.0))]);
     b.slab(-44.0, -26.0, -22.0, -21.6, 0.0, 0.25, crystal_dim.clone());
     // raised obsidian ledge with the rocket launcher (ogre perch).

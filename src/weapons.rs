@@ -9,6 +9,7 @@ use crate::common::tune::*;
 use crate::common::*;
 use crate::effects::{spawn_muzzle_flash, Lifetime};
 use crate::monster_model::nearest_limb_hit;
+use crate::mount::{ActiveMount, WhipHit};
 use crate::physics::{line_of_sight, ray_aabb, raycast_world, Aabb};
 use crate::player::{Player, PlayerCamera};
 use crate::projectiles::{spawn_projectile, ProjKind};
@@ -362,6 +363,17 @@ fn switch_weapon(
     }
 }
 
+/// The message writers `fire_weapon` emits through, bundled into one SystemParam
+/// so the system stays under Bevy's 16-param ceiling.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct FireWriters<'w> {
+    dmg: MessageWriter<'w, DamageEvent>,
+    impact: MessageWriter<'w, ImpactEvent>,
+    whip_hit: MessageWriter<'w, WhipHit>,
+    sfx: MessageWriter<'w, Sfx>,
+    shake: MessageWriter<'w, ScreenShake>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fire_weapon(
     time: Res<Time>,
@@ -370,20 +382,48 @@ pub(crate) fn fire_weapon(
     colliders: Res<WorldColliders>,
     limb_boxes: Res<LimbBoxes>,
     gfx: Res<GfxAssets>,
+    active_mount: Res<ActiveMount>,
     mut rng_state: Local<u32>,
     mut nail_alt: Local<bool>,
     mut q_player: Query<(Entity, &mut Inventory)>,
     cam: Query<&GlobalTransform, With<PlayerCamera>>,
     targets: Query<(Entity, &GlobalTransform, &Hurtbox, &Faction), With<Health>>,
-    mut dmg: MessageWriter<DamageEvent>,
-    mut impact: MessageWriter<ImpactEvent>,
-    mut sfx: MessageWriter<Sfx>,
-    mut shake: MessageWriter<ScreenShake>,
+    mut w: FireWriters,
     mut kick: ResMut<ViewKick>,
 ) {
     let dt = time.delta_secs();
     let Ok((pe, mut inv)) = q_player.single_mut() else { return };
     inv.cooldown = (inv.cooldown - dt).max(0.0);
+
+    // While mounted on an Ogre your guns are stowed — the Ogre's chainsaw (run by
+    // `mount::mount_fire`) is your only weapon. Suppress BOTH the normal-fire path
+    // and the Lodestone alt-fire by bailing before either is reached.
+    if active_mount.0.is_some() {
+        return;
+    }
+
+    // Alt-fire: Grenade Launcher right-click lobs a Lodestone gravity well.
+    if inv.current == WeaponKind::Grenade && mouse.just_pressed(MouseButton::Right) {
+        let ai = inv.current.ammo();
+        const LODESTONE_COST: i32 = 1;
+        if inv.cooldown <= 0.0 && inv.ammo[ai] >= LODESTONE_COST {
+            if let Ok(cam_gt) = cam.single() {
+                // Cooldown >= the fuse so a second well can't normally be live while
+                // the first is still pulling — stacked wells sum their inward impulse
+                // and would slingshot monsters through the clump and scatter them.
+                inv.cooldown = 2.0;
+                inv.ammo[ai] -= LODESTONE_COST;
+                let origin = cam_gt.translation();
+                let forward = cam_gt.forward().as_vec3();
+                let muzzle = origin + forward * 0.6;
+                crate::projectiles::spawn_lodestone(&mut commands, &gfx, muzzle, forward, pe);
+                w.sfx.write(Sfx::at(Sound::Lodestone, muzzle));
+                w.shake.write(ScreenShake { amount: 0.1 });
+                kick.amount = (kick.amount + 0.5).min(1.5);
+            }
+        }
+        return; // RMB consumed by alt-fire; do not fall through to primary fire
+    }
 
     if !mouse.pressed(MouseButton::Left) || inv.cooldown > 0.0 {
         return;
@@ -407,8 +447,8 @@ pub(crate) fn fire_weapon(
     if !melee {
         spawn_muzzle_flash(&mut commands, &gfx, muzzle);
     }
-    sfx.write(Sfx::global(stats.sound));
-    shake.write(ScreenShake { amount: stats.shake });
+    w.sfx.write(Sfx::global(stats.sound));
+    w.shake.write(ScreenShake { amount: stats.shake });
     kick.amount = (kick.amount + stats.kick).min(1.5);
 
     if *rng_state == 0 {
@@ -427,12 +467,12 @@ pub(crate) fn fire_weapon(
         Mode::Hitscan { pellets, spread, damage } => {
             for _ in 0..pellets {
                 let d = spread_dir(forward, spread, rand(), rand());
-                hitscan(&mut commands, &colliders, &targets, &limb_boxes, &gfx, origin, d, damage, pe, false, &mut dmg, &mut impact);
+                hitscan(&mut commands, &colliders, &targets, &limb_boxes, &gfx, origin, d, damage, pe, false, &mut w.dmg, &mut w.impact);
             }
         }
         Mode::Beam { damage } => {
             let d = spread_dir(forward, 0.005, rand(), rand());
-            hitscan(&mut commands, &colliders, &targets, &limb_boxes, &gfx, origin, d, damage, pe, true, &mut dmg, &mut impact);
+            hitscan(&mut commands, &colliders, &targets, &limb_boxes, &gfx, origin, d, damage, pe, true, &mut w.dmg, &mut w.impact);
         }
         Mode::Projectile(ProjKind::Nail) => {
             // Twin-barrel alternating nail stream.
@@ -445,8 +485,15 @@ pub(crate) fn fire_weapon(
             spawn_projectile(&mut commands, &gfx, kind, muzzle, forward, true, Some(pe));
         }
         Mode::Melee { damage, range, knockback } => {
-            let end = melee_strike(&colliders, &targets, &limb_boxes, origin, forward, range, damage, knockback, pe, &mut dmg, &mut impact);
+            let (end, hit) = melee_strike(&colliders, &targets, &limb_boxes, origin, forward, range, damage, knockback, pe, &mut w.dmg, &mut w.impact);
             draw_whip(&mut commands, &gfx, muzzle, end);
+            // A Whip lash that connects with a monster flags it for the mount
+            // system (which opens a Mountable window on Ogre targets).
+            if inv.current == WeaponKind::Whip {
+                if let Some(target) = hit {
+                    w.whip_hit.write(WhipHit { target });
+                }
+            }
         }
     }
 }
@@ -454,7 +501,8 @@ pub(crate) fn fire_weapon(
 /// Short-range whip lash: hit the nearest monster in front (within `range`,
 /// not behind a wall), dealing `damage` and a strong knockback that flings the
 /// monster away from the player and a little upward. Returns the lash endpoint
-/// (the hit point, or the full reach on a miss) for the visual.
+/// (the hit point, or the full reach on a miss) for the visual, plus the monster
+/// entity struck (if any) so the caller can flag it (e.g. a mountable Ogre).
 #[allow(clippy::too_many_arguments)]
 fn melee_strike(
     colliders: &WorldColliders,
@@ -468,7 +516,7 @@ fn melee_strike(
     source: Entity,
     dmg: &mut MessageWriter<DamageEvent>,
     impact: &mut MessageWriter<ImpactEvent>,
-) -> Vec3 {
+) -> (Vec3, Option<Entity>) {
     // A wall between player and target stops the lash short.
     let wall_t = raycast_world(origin, dir, range, &colliders.solids).map(|(t, _, _)| t).unwrap_or(range);
     // Prefer a specific bone (padded reach so a glancing swing still connects);
@@ -493,13 +541,13 @@ fn melee_strike(
     if let Some((e, g, t, n)) = limb {
         dmg.write(DamageEvent::limb(e, damage, Some(source), push, g));
         impact.write(ImpactEvent { pos: origin + dir * t, normal: n, blood: true });
-        origin + dir * t.min(range)
+        (origin + dir * t.min(range), Some(e))
     } else if let Some((e, pt, n)) = body_hit {
         dmg.write(DamageEvent::body(e, damage, Some(source), push));
         impact.write(ImpactEvent { pos: pt, normal: n, blood: true });
-        origin + dir * body_t.min(range)
+        (origin + dir * body_t.min(range), Some(e))
     } else {
-        origin + dir * wall_t.min(range)
+        (origin + dir * wall_t.min(range), None)
     }
 }
 

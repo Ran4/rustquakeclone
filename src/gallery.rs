@@ -9,13 +9,14 @@ use crate::enemies::{spawn_monster, Enemy};
 use crate::level::MonsterKind;
 use crate::monster_model::MonsterTextures;
 
-const KINDS: [(MonsterKind, &str); 6] = [
+const KINDS: [(MonsterKind, &str); 7] = [
     (MonsterKind::Grunt, "grunt"),
     (MonsterKind::Enforcer, "enforcer"),
     (MonsterKind::Knight, "knight"),
     (MonsterKind::Scrag, "scrag"),
     (MonsterKind::Ogre, "ogre"),
     (MonsterKind::DeathKnight, "deathknight"),
+    (MonsterKind::Weaver, "weaver"),
 ];
 
 #[derive(Resource)]

@@ -19,12 +19,14 @@ mod level;
 mod levels;
 mod levelshot;
 mod monster_model;
+mod mount;
 mod physics;
 mod pickups;
 mod player;
 mod projectiles;
 mod vehicle;
 mod weapons;
+mod web;
 
 use bevy::asset::AssetPlugin;
 use bevy::light::GlobalAmbientLight;
@@ -132,6 +134,8 @@ fn main() {
             pickups::PickupsPlugin,
             gamestate::GameStatePlugin,
             vehicle::VehiclePlugin,
+            mount::MountPlugin,
+            web::WebPlugin,
             audio::AudioPlugin,
         ));
 

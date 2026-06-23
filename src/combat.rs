@@ -42,6 +42,23 @@ pub(crate) fn handle_explosions(
             let falloff = 1.0 - dist / ex.radius;
             let dir = if dist > 0.01 { to / dist } else { Vec3::Y };
             let _ = hb;
+            if ex.implode {
+                // Gravity well: pull monsters inward, zero damage, never the firer (self-pull guard).
+                // `ex.push` is the per-frame inward velocity impulse magnitude (PULL_ACCEL * dt upstream).
+                if self_blast {
+                    continue;
+                }
+                // Taper near the centre so monsters settle into a clump instead of slingshotting through.
+                let near = (dist / 2.0).clamp(0.0, 1.0); // 0 within ~2m of the well
+                let pull = ex.push * falloff * near;
+                // Pull along the ground only: a lobbed well sits above grounded monsters
+                // (and around a flyer) while it's still bouncing, so a 3D pull would yank
+                // them up/down. Horizontal-only drag also makes the clump tighter.
+                let mut kb = -dir * pull; // `dir` is OUTWARD (well -> target); negate => inward
+                kb.y = 0.0;
+                damage.write(DamageEvent::body(e, 0.0, ex.source, kb));
+                continue; // skip the normal damage + limb-splash path
+            }
             // The firer is launched by their own blast (rocket/grenade jump), but
             // takes only half self-damage so a single jump isn't lethal.
             let dmg_scale = if self_blast { 0.5 } else { 1.0 };
@@ -79,7 +96,7 @@ fn nearest_limb_of(e: Entity, pos: Vec3, boxes: &LimbBoxes) -> Option<LimbGroup>
     best.map(|(_, g)| g)
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn apply_damage(
     mut reader: MessageReader<DamageEvent>,
     mut q: Query<(
@@ -91,18 +108,37 @@ fn apply_damage(
     )>,
     mut enemies: Query<&mut crate::enemies::Enemy>,
     mut limbq: Query<&mut crate::monster_model::Limbs>,
+    mount: Res<crate::mount::ActiveMount>,
+    q_player: Query<Entity, With<crate::player::Player>>,
     mut sever_w: MessageWriter<SeverEvent>,
     mut sfx: MessageWriter<Sfx>,
     mut flash: MessageWriter<ScreenFlash>,
 ) {
+    // Tank rule: while mounted, damage aimed at the player is soaked by the Ogre
+    // (you ride on its HP and it dies under you). Resolved once per call.
+    let player_e = q_player.single().ok();
+    let redirect_to = mount.0;
     for ev in reader.read() {
-        let Ok((mut hp, armor, kb, faction, gt)) = q.get_mut(ev.target) else {
+        // Redirect a genuine player-targeted hit to the mounted Ogre. If the Ogre
+        // is gone (overkill despawn, eject still resolving) the `get_mut` below
+        // fails and we fall back to the player so the hit isn't silently dropped.
+        let target = match (redirect_to, player_e) {
+            (Some(ogre), Some(pe)) if ev.target == pe => ogre,
+            _ => ev.target,
+        };
+        let resolved = if q.contains(target) { target } else { ev.target };
+        // True when a player-targeted hit was actually soaked by the mounted Ogre
+        // (tank rule). The rider's HP/pain now live on the Ogre, so the player
+        // arm below never fires — give the rider a damped red flash so the ride
+        // being whittled down is still legible.
+        let redirected = redirect_to.is_some() && Some(resolved) == redirect_to && resolved != ev.target;
+        let Ok((mut hp, armor, kb, faction, gt)) = q.get_mut(resolved) else {
             continue;
         };
         if hp.dead {
             continue;
         }
-        let en_kind = enemies.get(ev.target).ok().map(|e| e.kind);
+        let en_kind = enemies.get(resolved).ok().map(|e| e.kind);
         let mut dmg = ev.amount.max(0.0);
         if let Some(mut a) = armor {
             if a.points > 0.0 && a.absorb > 0.0 {
@@ -121,9 +157,12 @@ fn apply_damage(
                 sfx.write(Sfx::global(Sound::PlayerPain));
                 flash.write(ScreenFlash { color: rgb(0.8, 0.0, 0.0), strength: (dmg / 40.0).clamp(0.15, 0.7) });
             }
+            // A zero-damage event is a pure knockback (the Lodestone well's inward
+            // pull) — drag the monster silently, no hit-flash or pain grunt.
+            _ if ev.amount <= 0.0 => {}
             _ => {
                 // Hit-flash + pain flinch on the monster (the crunch of the hit).
-                if let Ok(mut en) = enemies.get_mut(ev.target) {
+                if let Ok(mut en) = enemies.get_mut(resolved) {
                     en.flash = 1.0;
                     if en.pain_cd <= 0.0 && hp.current > 0.0 {
                         en.pain = 0.22;
@@ -133,13 +172,19 @@ fn apply_damage(
                         sfx.write(Sfx::pitched(Sound::EnemyPain, pos, pitch));
                     }
                 }
+                // Tank rule: the hit was redirected off the player onto the mounted
+                // Ogre, so the player arm above didn't run. Flash the rider (damped)
+                // so they can tell their mount is soaking damage for them.
+                if redirected && dmg > 0.0 {
+                    flash.write(ScreenFlash { color: rgb(0.8, 0.0, 0.0), strength: (dmg / 80.0).clamp(0.1, 0.4) });
+                }
             }
         }
 
         // Limb-targeted hits also pour into the limb's sever pool. When it empties,
         // sever the limb (a Head sever kills a normal outright / chunks a boss).
         if let Some(g) = ev.limb {
-            if let Ok(mut limbs_mut) = limbq.get_mut(ev.target) {
+            if let Ok(mut limbs_mut) = limbq.get_mut(resolved) {
                 let limbs = &mut *limbs_mut;
                 let gi = g.idx();
                 let max = limbs.max[gi];
@@ -161,7 +206,7 @@ fn apply_damage(
                             }
                         }
                         sever_w.write(SeverEvent {
-                            root: ev.target,
+                            root: resolved,
                             limb: g,
                             at: pos,
                             dir: ev.knockback.normalize_or_zero(),

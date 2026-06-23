@@ -2,10 +2,6 @@
 
 ALWAYS implement these one at a time.
 
-06
-09
-12
-15
 17
 29
 37

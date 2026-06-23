@@ -217,6 +217,10 @@ pub struct ExplosionEvent {
     pub from_player: bool,
     pub color: Color,
     pub push: f32,
+    /// Inverts the blast into a gravity well (the Lodestone): pull targets inward
+    /// for zero damage instead of flinging them out. `push` is then the per-frame
+    /// inward velocity impulse magnitude (PULL_ACCEL * dt) so it's framerate-independent.
+    pub implode: bool,
     /// If this blast came from a projectile that struck a specific limb directly,
     /// the (target, limb) it hit — so splash focuses that limb.
     pub direct_limb: Option<(Entity, LimbGroup)>,
@@ -310,6 +314,7 @@ pub enum Sound {
     Whip,
     RopeTaut,
     Sever,
+    Lodestone,
     EngineLoop,
     EngineStart,
     TireScreech,
@@ -346,6 +351,7 @@ impl Sound {
             Sound::Whip => "sounds/whip.wav",
             Sound::RopeTaut => "sounds/rope_taut.wav",
             Sound::Sever => "sounds/sever.wav",
+            Sound::Lodestone => "sounds/lodestone.wav",
             // ElevenLabs-generated vehicle sounds (scripts/generate_sounds.py).
             Sound::EngineLoop => "sounds/engine_loop.wav",
             Sound::EngineStart => "sounds/engine_start.wav",
@@ -354,14 +360,14 @@ impl Sound {
             Sound::RamHit => "sounds/ram_hit.wav",
         }
     }
-    pub fn all() -> [Sound; 32] {
+    pub fn all() -> [Sound; 33] {
         use Sound::*;
         [
             Shotgun, SuperShotgun, Nailgun, RocketFire, GrenadeFire, Explosion,
             GrenadeBounce, Impact, PickupHealth, PickupArmor, PickupAmmo,
             PickupWeapon, KeyPickup, Jump, Land, PlayerPain, PlayerDeath,
             EnemySight, EnemyPain, EnemyDeath, Door, Victory, Ambient, Lightning,
-            Whip, RopeTaut, Sever, EngineLoop, EngineStart, TireScreech, Crash, RamHit,
+            Whip, RopeTaut, Sever, Lodestone, EngineLoop, EngineStart, TireScreech, Crash, RamHit,
         ]
     }
 }

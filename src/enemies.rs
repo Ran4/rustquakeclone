@@ -16,6 +16,30 @@ const GRUNT_AIM_LAG: f32 = 0.090;
 /// Random aim error per axis (yaw + pitch), uniform in ±this many degrees.
 const GRUNT_AIM_SPREAD_DEG: f32 = 5.0;
 
+// --- Pack doctrine (squad blackboard) tuning ----------------------------------
+/// Melee monsters within this distance of any current squad member join that
+/// squad (greedy proximity clustering). Squads of one stay lone wolves.
+const SQUAD_RADIUS: f32 = 16.0;
+/// How far to the player's side a flanker's *transit* waypoint sits while it is
+/// still rounding the player's front cone (it is a way-point, not a parking
+/// spot — once the flanker is abreast/behind the player it closes into melee).
+const FLANK_RADIUS: f32 = 6.0;
+/// Raycast length used to test whether a flank bearing is wall-free.
+const FLANK_PROBE: f32 = 3.0;
+/// The baiter closes slower than a normal charge — the telegraph that lets the
+/// player read which member is the bait.
+const BAITER_SPEED_SCALE: f32 = 0.65;
+/// A squadmate counts as "in melee" with the player when within
+/// `melee_range + this`, used to gate when the reserve commits.
+const ENGAGE_MELEE_PAD: f32 = 1.5;
+/// A flanker is "abreast or behind" the player — and so should stop arcing and
+/// drive straight into melee — once the cosine of its bearing off the player's
+/// forward axis drops below this (≈ a 65° half-cone in front of the player).
+const FLANK_CONE_COS: f32 = 0.42;
+/// Keep the previous tick's baiter unless a rival is at least this much nearer
+/// the player, so the bait role doesn't ping-pong between two even contenders.
+const BAITER_HYSTERESIS: f32 = 0.6;
+
 /// A thin emissive tracer line (Grunt shot telegraph / hit feedback).
 fn draw_tracer(commands: &mut Commands, gfx: &GfxAssets, a: Vec3, b: Vec3) {
     let mid = (a + b) * 0.5;
@@ -36,12 +60,50 @@ fn draw_tracer(commands: &mut Commands, gfx: &GfxAssets, a: Vec3, b: Vec3) {
 pub struct EnemiesPlugin;
 impl Plugin for EnemiesPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, enemy_ai.run_if(in_state(GameState::Playing)))
+        app.init_resource::<SquadBlackboard>()
+            .add_systems(
+                FixedUpdate,
+                // The blackboard is rebuilt every tick BEFORE the AI reads it, so
+                // role assignments always reflect the live (post-death) squad.
+                (assign_squad_roles, enemy_ai).chain().run_if(in_state(GameState::Playing)),
+            )
             .add_systems(
                 Update,
                 (enemy_hit_flash, key_ambush).run_if(in_state(GameState::Playing)),
             );
     }
+}
+
+/// A monster's per-tick job within its squad. Computed from the player's view
+/// direction by `assign_squad_roles`; absent from the blackboard => lone wolf.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SquadRole {
+    /// Advance head-on into the player's view, closing slower (the telegraph).
+    Baiter,
+    /// Route to the player's left side / rear, outside the facing cone.
+    FlankLeft,
+    /// Route to the player's right side / rear, outside the facing cone.
+    FlankRight,
+    /// Hold back until two squadmates are already engaged in melee.
+    Reserve,
+}
+
+/// Per-tick squad role assignments, keyed by monster entity. Rebuilt every
+/// FixedUpdate by `assign_squad_roles` before `enemy_ai` reads it. Absent => the
+/// monster is a lone wolf (plain Chase, exactly as before this feature).
+#[derive(Resource, Default)]
+pub struct SquadBlackboard {
+    pub roles: std::collections::HashMap<Entity, SquadRole>,
+}
+
+/// Forward (heading) vector for a player yaw — matches `player_move`'s basis.
+fn forward_from_yaw(yaw: f32) -> Vec3 {
+    Vec3::new(-yaw.sin(), 0.0, -yaw.cos())
+}
+
+/// Rightward vector for a player yaw — matches `player_move`'s basis.
+fn right_from_yaw(yaw: f32) -> Vec3 {
+    Vec3::new(yaw.cos(), 0.0, -yaw.sin())
 }
 
 /// When the player grabs the Silver Key, the vault erupts: a reinforcement wave
@@ -176,6 +238,8 @@ fn stats(kind: MonsterKind) -> MStats {
         Scrag => MStats { health: 45.0, speed: 4.0, sight: 32.0, attack_range: 28.0, melee_range: 0.0, cd: 1.4, damage: 10.0, half: Vec3::new(0.5, 0.7, 0.5), flying: true, color: rgb(0.3, 0.55, 0.3), emissive: LinearRgba::rgb(0.05, 0.3, 0.05) },
         Ogre => MStats { health: 200.0, speed: 2.7, sight: 28.0, attack_range: 22.0, melee_range: 2.8, cd: 1.9, damage: 22.0, half: Vec3::new(0.6, 1.1, 0.6), flying: false, color: rgb(0.4, 0.3, 0.22), emissive: LinearRgba::BLACK },
         DeathKnight => MStats { health: 350.0, speed: 3.4, sight: 32.0, attack_range: 26.0, melee_range: 3.0, cd: 1.6, damage: 22.0, half: Vec3::new(0.6, 1.2, 0.6), flying: false, color: rgb(0.4, 0.12, 0.14), emissive: LinearRgba::rgb(0.4, 0.0, 0.05) },
+        // Low, wide spider: a ranged venom-spitter that anchors a silk strand.
+        Weaver => MStats { health: 50.0, speed: 4.2, sight: 30.0, attack_range: 24.0, melee_range: 0.0, cd: 1.3, damage: 9.0, half: Vec3::new(0.6, 0.5, 0.6), flying: false, color: rgb(0.14, 0.12, 0.16), emissive: LinearRgba::rgb(0.05, 0.2, 0.05) },
     }
 }
 
@@ -189,6 +253,7 @@ pub fn kind_pitch(kind: MonsterKind) -> f32 {
     match kind {
         Ogre | DeathKnight => 0.7,
         Scrag => 1.45,
+        Weaver => 1.3, // chittery, skittering voice
         Knight => 1.15,
         _ => 1.0,
     }
@@ -263,16 +328,260 @@ pub fn spawn_monsters(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// A melee monster considered for squad roles this tick. Pulled out of the ECS
+/// so the clustering + role math is a pure, unit-testable function.
+struct SquadMember {
+    e: Entity,
+    pos: Vec3,
+    melee_range: f32,
+    has_los: bool,
+}
+
+/// Rebuild the squad blackboard for this tick: cluster awake melee monsters by
+/// proximity and hand each clustered squad (size >= 2) a role. Lone monsters and
+/// ranged monsters (melee_range == 0) are left out of the map entirely, so they
+/// keep their unchanged solo Idle->Chase->Attack behaviour.
+#[allow(clippy::type_complexity)]
+fn assign_squad_roles(
+    colliders: Res<WorldColliders>,
+    q_player: Query<(&Transform, &Player)>,
+    q_mon: Query<(Entity, &Transform, &Enemy), (Without<Player>, Without<Dying>, Without<crate::mount::Mounted>)>,
+    mut blackboard: ResMut<SquadBlackboard>,
+) {
+    let Ok((player_tf, player)) = q_player.single() else {
+        blackboard.roles.clear();
+        return;
+    };
+    let player_pos = player_tf.translation;
+    let player_eye = player_pos + Vec3::Y * EYE_OFFSET;
+
+    // Candidate melee members: awake, alive (Dying excluded by the query), and
+    // actually melee (ranged casters have melee_range == 0 and never get a role).
+    let mut members: Vec<SquadMember> = Vec::new();
+    for (e, tf, en) in &q_mon {
+        if !en.awake || en.melee_range <= 0.0 {
+            continue;
+        }
+        let pos = tf.translation;
+        let eye = pos + Vec3::Y * en.eye_h;
+        members.push(SquadMember {
+            e,
+            pos,
+            melee_range: en.melee_range,
+            has_los: line_of_sight(eye, player_eye, &colliders.solids),
+        });
+    }
+
+    // Recompute roles into a fresh map (read the previous one first, for the bait
+    // + reserve hysteresis below), then swap it in. The blackboard is otherwise
+    // stateless per tick, so dead members drop out automatically.
+    let next = compute_squad_roles(&members, player_pos, right_from_yaw(player.yaw), &blackboard.roles);
+    blackboard.roles = next;
+}
+
+/// Pure squad solver: cluster `members` by proximity and assign each clustered
+/// squad (size >= 2) a role. `prev` is last tick's assignment, used only for
+/// light hysteresis (sticky baiter, banded reserve release) so roles don't flip
+/// frame-to-frame. Returns the new role map keyed by entity; members absent from
+/// it are lone wolves and chase exactly as before this feature.
+fn compute_squad_roles(
+    members: &[SquadMember],
+    player_pos: Vec3,
+    player_right: Vec3,
+    prev: &std::collections::HashMap<Entity, SquadRole>,
+) -> std::collections::HashMap<Entity, SquadRole> {
+    let mut roles = std::collections::HashMap::new();
+    let n = members.len();
+    if n < 2 {
+        return roles; // nobody can have a squadmate
+    }
+
+    // Greedy proximity clustering: members within SQUAD_RADIUS of any current
+    // squad member join it. n is tiny so the O(n^2) flood is free.
+    let r2 = SQUAD_RADIUS * SQUAD_RADIUS;
+    let mut squad_of = vec![usize::MAX; n]; // cluster id per member
+    let mut squads: Vec<Vec<usize>> = Vec::new();
+    for i in 0..n {
+        if squad_of[i] != usize::MAX {
+            continue;
+        }
+        let id = squads.len();
+        let mut stack = vec![i];
+        squad_of[i] = id;
+        let mut cluster = Vec::new();
+        while let Some(cur) = stack.pop() {
+            cluster.push(cur);
+            for j in 0..n {
+                if squad_of[j] == usize::MAX && members[cur].pos.distance_squared(members[j].pos) <= r2 {
+                    squad_of[j] = id;
+                    stack.push(j);
+                }
+            }
+        }
+        squads.push(cluster);
+    }
+
+    for squad in &squads {
+        if squad.len() < 2 {
+            continue; // lone wolf — no role, unchanged solo behaviour
+        }
+
+        // How many squadmates are already pressing the player in melee — gates
+        // whether the reserve commits this tick (baked here so enemy_ai never
+        // needs the engaged count).
+        let engaged = squad
+            .iter()
+            .filter(|&&m| {
+                members[m].pos.distance(player_pos) <= members[m].melee_range + ENGAGE_MELEE_PAD
+            })
+            .count();
+
+        // Baiter: the member that holds the player's gaze — prefer one with clear
+        // LoS, and among those (or all, if none has LoS) the one nearest the player.
+        let key = |m: usize| {
+            let los_rank = if members[m].has_los { 0 } else { 1 };
+            (los_rank, members[m].pos.distance(player_pos))
+        };
+        let mut baiter = squad
+            .iter()
+            .copied()
+            .min_by(|&a, &b| {
+                let (la, da) = key(a);
+                let (lb, db) = key(b);
+                la.cmp(&lb).then(da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal))
+            })
+            .unwrap();
+        // Hysteresis: stick with last tick's baiter unless the challenger beats it
+        // on LoS rank or is meaningfully (BAITER_HYSTERESIS) nearer — otherwise two
+        // near-equal contenders trade the bait role (and its 0.65x gait) each tick.
+        if let Some(&prev_baiter) = squad.iter().find(|&&m| prev.get(&members[m].e) == Some(&SquadRole::Baiter)) {
+            let (lp, dp) = key(prev_baiter);
+            let (lb, db) = key(baiter);
+            if lp <= lb && dp <= db + BAITER_HYSTERESIS {
+                baiter = prev_baiter;
+            }
+        }
+        roles.insert(members[baiter].e, SquadRole::Baiter);
+
+        // Non-baiters, farthest-from-player first, so reserves (if any) come off
+        // the rear of the squad rather than its front.
+        let mut rest: Vec<usize> = squad.iter().copied().filter(|&m| m != baiter).collect();
+        rest.sort_by(|&a, &b| {
+            members[b]
+                .pos
+                .distance(player_pos)
+                .partial_cmp(&members[a].pos.distance(player_pos))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Reserve release with an enter/exit band so a squadmate dithering at the
+        // melee edge doesn't toggle the rear member between full-stop and full-
+        // advance: commit reserves once two are engaged, and only RE-impose the
+        // hold once the squad falls back below one engaged. Mid-band, keep whatever
+        // we did last tick (any non-Reserve role in `prev` => stay committed).
+        let was_committed = squad
+            .iter()
+            .any(|&m| matches!(prev.get(&members[m].e), Some(r) if *r != SquadRole::Reserve));
+        let committed = engaged >= 2 || (engaged >= 1 && was_committed);
+        let max_reserves = squad.len().saturating_sub(2);
+        let reserves = if committed { 0 } else { max_reserves };
+        for (idx, &m) in rest.iter().enumerate() {
+            let role = if idx < reserves {
+                SquadRole::Reserve
+            } else {
+                // Flank toward whichever side of the player's facing this member
+                // already sits on, so it stays outside the front cone.
+                let to_member = members[m].pos - player_pos;
+                if to_member.dot(player_right) >= 0.0 {
+                    SquadRole::FlankRight
+                } else {
+                    SquadRole::FlankLeft
+                }
+            };
+            roles.insert(members[m].e, role);
+        }
+    }
+    roles
+}
+
+/// The desired horizontal bearing for a flanker. Two phases (a transit waypoint,
+/// not a parking spot): while the flanker is still inside the player's front cone
+/// it arcs to a point genuinely behind-and-to-its-assigned-side so it rounds the
+/// player rather than crossing their view; once it is abreast/behind the player it
+/// drives straight in so it actually reaches melee (where the Attack state takes
+/// over). `flank_right` picks the side; `to_player_h` is the unit vector toward
+/// the player. Returns a horizontal unit bearing (caller still wall-probes it).
+fn flank_bearing(
+    flanker_pos: Vec3,
+    player_pos: Vec3,
+    player_fwd: Vec3,
+    player_right: Vec3,
+    flank_right: bool,
+    melee_range: f32,
+    to_player_h: Vec3,
+) -> Vec3 {
+    let s = if flank_right { 1.0 } else { -1.0 };
+    // How far off the player's forward axis the flanker currently sits: cos of the
+    // angle between "player -> flanker" and the player's facing.
+    let to_flanker = flanker_pos - player_pos;
+    let off_axis_cos = to_flanker.normalize_or_zero().dot(player_fwd);
+    if off_axis_cos <= FLANK_CONE_COS {
+        // Abreast or behind the player already — close straight into melee from the
+        // side it has reached (no more orbiting at a fixed standoff).
+        return to_player_h;
+    }
+    // Still in front: aim for a point behind-and-to-the-side so the path arcs
+    // around the player. The waypoint sits inside melee range along the player's
+    // forward (behind), so on arrival the flanker is already in attack reach.
+    let behind = (melee_range * 0.8).max(0.5);
+    let target = player_pos + player_right * (s * FLANK_RADIUS) - player_fwd * behind;
+    let to_t = Vec3::new(target.x - flanker_pos.x, 0.0, target.z - flanker_pos.z);
+    to_t.normalize_or_zero()
+}
+
+/// Pick a horizontal bearing for a flanker that doesn't walk it into a wall.
+/// Probes `primary` with two rays offset by ±the body half-width (so a lane that
+/// merely grazes a corner counts as blocked); if clear, take it. Otherwise try
+/// the mirrored flank (`mirror`) — the other side may be open in an asymmetric
+/// room — and only then fall back to `fallback` (straight at the player) so a
+/// boxed-in flanker never freezes. Bearings are horizontal unit vectors.
+fn pick_walkfree_bearing(pos: Vec3, half: Vec3, primary: Vec3, mirror: Vec3, fallback: Vec3, solids: &[Aabb]) -> Vec3 {
+    let probe_origin = pos + Vec3::Y * (half.y * 0.6); // body mid-height
+    let clear = |dir: Vec3| -> bool {
+        if dir == Vec3::ZERO {
+            return false;
+        }
+        // Two parallel rays offset by the body half-width, so a wall the body
+        // would scrape (but a single centre ray would miss) still reads as blocked.
+        let perp = Vec3::new(-dir.z, 0.0, dir.x).normalize_or_zero() * half.x.max(0.05);
+        for o in [probe_origin + perp, probe_origin - perp] {
+            match raycast_world(o, dir, FLANK_PROBE, solids) {
+                Some((t, _, _)) if t < FLANK_PROBE - 1e-3 => return false,
+                _ => {}
+            }
+        }
+        true
+    };
+    if clear(primary) {
+        primary
+    } else if clear(mirror) {
+        mirror
+    } else {
+        fallback // direct chase whether or not it's clear — never freeze
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn enemy_ai(
     time: Res<Time>,
     colliders: Res<WorldColliders>,
     gfx: Res<GfxAssets>,
     history: Res<PlayerHistory>,
+    blackboard: Res<SquadBlackboard>,
     mut commands: Commands,
     mut rng_state: Local<u32>,
-    mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Knockback, Option<&Crippled>), (Without<Player>, Without<Dying>)>,
-    q_player: Query<(Entity, &Transform), With<Player>>,
+    mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Knockback, Option<&Crippled>), (Without<Player>, Without<Dying>, Without<crate::mount::Mounted>)>,
+    q_player: Query<(Entity, &Transform, &Player)>,
     mut dmg: MessageWriter<DamageEvent>,
     mut sfx: MessageWriter<Sfx>,
 ) {
@@ -281,9 +590,10 @@ fn enemy_ai(
         return;
     }
     let now = time.elapsed_secs();
-    let Ok((player_e, player_tf)) = q_player.single() else { return };
+    let Ok((player_e, player_tf, player)) = q_player.single() else { return };
     let player_pos = player_tf.translation;
     let player_eye = player_pos + Vec3::Y * EYE_OFFSET;
+    let player_yaw = player.yaw;
 
     if *rng_state == 0 {
         *rng_state = 0x9e37_79b9;
@@ -318,6 +628,14 @@ fn enemy_ai(
         let dist = to_player.length();
         let los = line_of_sight(eye, player_eye, &colliders.solids);
 
+        // Consume knockback (push/blast/implode-pull) once per tick, awake or not —
+        // so a sleeping monster is still dragged by a Lodestone well and never banks
+        // a latent impulse to dump as a slingshot the instant it wakes.
+        if kb.0 != Vec3::ZERO {
+            en.vel += kb.0;
+            kb.0 = Vec3::ZERO;
+        }
+
         // Wake up when the player is seen.
         if !en.awake {
             if dist < en.sight && los {
@@ -325,7 +643,8 @@ fn enemy_ai(
                 en.state = AiState::Chase;
                 sfx.write(Sfx::pitched(sight_sound(en.kind), pos, kind_pitch(en.kind)));
             } else {
-                // idle: still apply gravity so they rest on the floor
+                // idle: apply gravity so they rest on the floor, and drift + bleed any
+                // knockback velocity (e.g. a well's pull) so they slide in and settle.
                 settle(&mut tf, &mut en, dt, &colliders.solids);
                 continue;
             }
@@ -335,12 +654,6 @@ fn enemy_ai(
         if to_player.x.abs() + to_player.z.abs() > 0.01 {
             let yaw = to_player.x.atan2(to_player.z) + std::f32::consts::PI;
             tf.rotation = Quat::from_rotation_y(yaw);
-        }
-
-        // Consume knockback.
-        if kb.0 != Vec3::ZERO {
-            en.vel += kb.0;
-            kb.0 = Vec3::ZERO;
         }
 
         // Resolve a pending Grunt hitscan once the wind-up telegraph elapses.
@@ -370,6 +683,42 @@ fn enemy_ai(
             let dir = if en.flying { to_player } else { Vec3::new(to_player.x, 0.0, to_player.z) };
             wish = dir.normalize_or_zero() * en.speed * leg_scale;
             en.state = AiState::Chase;
+
+            // Pack doctrine: a clustered melee monster steers its chase by the
+            // role the blackboard handed it this tick. Lone wolves and ranged
+            // casters never appear in the map and so chase exactly as before.
+            if !en.flying {
+                if let Some(role) = blackboard.roles.get(&e).copied() {
+                    let to_player_h = Vec3::new(to_player.x, 0.0, to_player.z).normalize_or_zero();
+                    match role {
+                        SquadRole::Baiter => {
+                            // Straight head-on, but slower (the telegraph).
+                            wish = to_player_h * en.speed * leg_scale * BAITER_SPEED_SCALE;
+                        }
+                        SquadRole::FlankLeft | SquadRole::FlankRight => {
+                            let pf = forward_from_yaw(player_yaw);
+                            let pr = right_from_yaw(player_yaw);
+                            let flank_right = role == SquadRole::FlankRight;
+                            // Arc around the player's front cone, then close into
+                            // melee once abreast/behind (a transit waypoint, not a
+                            // fixed standoff).
+                            let primary = flank_bearing(
+                                pos, player_pos, pf, pr, flank_right, en.melee_range, to_player_h,
+                            );
+                            // If that lane is walled, the mirrored side may be open.
+                            let mirror = flank_bearing(
+                                pos, player_pos, pf, pr, !flank_right, en.melee_range, to_player_h,
+                            );
+                            let bearing = pick_walkfree_bearing(pos, en.half, primary, mirror, to_player_h, &colliders.solids);
+                            wish = bearing * en.speed * leg_scale;
+                        }
+                        SquadRole::Reserve => {
+                            // Hold back (still faces the player, but doesn't advance).
+                            wish = Vec3::ZERO;
+                        }
+                    }
+                }
+            }
         } else {
             en.state = AiState::Attack;
             let strafe = Vec3::new(-to_player.z, 0.0, to_player.x).normalize_or_zero();
@@ -423,18 +772,29 @@ fn enemy_ai(
     }
 }
 
-/// Idle gravity settle so sleeping monsters sit on the ground.
+/// Idle gravity settle so sleeping monsters sit on the ground. Any horizontal
+/// velocity (e.g. a Lodestone well's pull, consumed before this is called) carries
+/// them along and is bled off by friction so they drift in and come to rest rather
+/// than sliding forever — and don't hoard a knockback to slingshot on waking.
 fn settle(tf: &mut Transform, en: &mut Enemy, dt: f32, solids: &[crate::physics::Aabb]) {
     if en.flying {
         return;
     }
+    // Bleed horizontal drift toward a stop (mirrors the player's ground friction).
+    let horiz = Vec3::new(en.vel.x, 0.0, en.vel.z);
+    let speed = horiz.length();
+    if speed > 1e-4 {
+        let drop = speed.max(1.0) * tune::FRICTION * dt;
+        let scale = (speed - drop).max(0.0) / speed;
+        en.vel.x *= scale;
+        en.vel.z *= scale;
+    }
     en.vel.y -= tune::GRAVITY * dt;
-    let res = move_and_slide(tf.translation, en.half, Vec3::new(0.0, en.vel.y, 0.0), dt, solids, tune::STEP_HEIGHT);
+    let res = move_and_slide(tf.translation, en.half, en.vel, dt, solids, tune::STEP_HEIGHT);
     tf.translation = res.pos;
-    if res.on_ground {
+    en.vel = res.vel;
+    if res.on_ground && en.vel.y < 0.0 {
         en.vel.y = 0.0;
-    } else {
-        en.vel.y = res.vel.y;
     }
 }
 
@@ -475,6 +835,13 @@ fn do_attack(
             }
         }
         Enforcer | Scrag => {
+            sfx.write(Sfx::at(Sound::Nailgun, eye));
+            if !disarmed {
+                spawn_projectile(commands, gfx, ProjKind::Bolt, muzzle, to, false, Some(self_e));
+            }
+        }
+        Weaver => {
+            // A venom spit — a single bolt, like the other ranged casters.
             sfx.write(Sfx::at(Sound::Nailgun, eye));
             if !disarmed {
                 spawn_projectile(commands, gfx, ProjKind::Bolt, muzzle, to, false, Some(self_e));
@@ -573,5 +940,206 @@ fn resolve_grunt_shot(
 
     if hit_t.is_some() {
         dmg.write(DamageEvent::body(player_e, damage, Some(self_e), dir * 2.0));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn ent(i: u32) -> Entity {
+        Entity::from_raw_u32(i).unwrap()
+    }
+
+    /// Build a Knight-like squad member at `pos` (melee_range 2.4, LoS clear).
+    fn mem(i: u32, pos: Vec3) -> SquadMember {
+        SquadMember { e: ent(i), pos, melee_range: 2.4, has_los: true }
+    }
+
+    // Player faces -Z (yaw 0): forward = (0,0,-1), right = (1,0,0). Player at origin.
+    const PR: Vec3 = Vec3::new(1.0, 0.0, 0.0);
+    const PF: Vec3 = Vec3::new(0.0, 0.0, -1.0);
+
+    #[test]
+    fn lone_or_ranged_get_no_roles() {
+        let none = HashMap::new();
+        // A single member never has a squadmate.
+        let one = [mem(1, Vec3::new(0.0, 0.0, -10.0))];
+        assert!(compute_squad_roles(&one, Vec3::ZERO, PR, &none).is_empty());
+    }
+
+    #[test]
+    fn pair_yields_one_baiter_and_one_flanker() {
+        let none = HashMap::new();
+        // Two melee members in front of the player, both within SQUAD_RADIUS.
+        let m = [
+            mem(1, Vec3::new(-2.0, 0.0, -8.0)), // farther
+            mem(2, Vec3::new(1.0, 0.0, -5.0)),  // nearer -> baiter
+        ];
+        let roles = compute_squad_roles(&m, Vec3::ZERO, PR, &none);
+        assert_eq!(roles.len(), 2);
+        assert_eq!(roles[&ent(2)], SquadRole::Baiter, "nearest-with-LoS is the baiter");
+        // The other is a flanker (left, since it sits on the player's -x side).
+        assert_eq!(roles[&ent(1)], SquadRole::FlankLeft);
+    }
+
+    #[test]
+    fn baiter_prefers_los_over_nearer_blind_member() {
+        let none = HashMap::new();
+        let mut m = [
+            mem(1, Vec3::new(0.0, 0.0, -3.0)), // nearer but blind
+            mem(2, Vec3::new(0.0, 0.0, -6.0)), // farther but has LoS
+        ];
+        m[0].has_los = false;
+        let roles = compute_squad_roles(&m, Vec3::ZERO, PR, &none);
+        assert_eq!(roles[&ent(2)], SquadRole::Baiter, "LoS outranks raw distance");
+    }
+
+    #[test]
+    fn flank_side_follows_player_right() {
+        let none = HashMap::new();
+        // Baiter dead-ahead and one squadmate to the right both in melee (engaged ==
+        // 2 => no reserve held back), and a left squadmate further out: with reserves
+        // off, every non-baiter is a flanker so we can read pure side selection.
+        let m = [
+            mem(1, Vec3::new(0.0, 0.0, -1.5)), // ahead, in melee -> baiter
+            mem(2, Vec3::new(1.5, 0.0, -1.5)), // +x, in melee => right of player
+            mem(3, Vec3::new(-5.0, 0.0, -2.0)), // -x => left of player
+        ];
+        let roles = compute_squad_roles(&m, Vec3::ZERO, PR, &none);
+        assert_eq!(roles[&ent(1)], SquadRole::Baiter);
+        assert_eq!(roles[&ent(2)], SquadRole::FlankRight);
+        assert_eq!(roles[&ent(3)], SquadRole::FlankLeft);
+    }
+
+    #[test]
+    fn third_member_held_in_reserve_until_two_engaged() {
+        let none = HashMap::new();
+        // Three members, none in melee yet (all > melee_range + pad from player):
+        // the farthest is held in Reserve.
+        let m = [
+            mem(1, Vec3::new(0.0, 0.0, -6.0)),
+            mem(2, Vec3::new(4.0, 0.0, -6.0)),
+            mem(3, Vec3::new(-2.0, 0.0, -12.0)), // farthest -> reserve
+        ];
+        let roles = compute_squad_roles(&m, Vec3::ZERO, PR, &none);
+        let n_reserve = roles.values().filter(|&&r| r == SquadRole::Reserve).count();
+        assert_eq!(n_reserve, 1, "one reserve while engaged < 2");
+        assert_eq!(roles[&ent(3)], SquadRole::Reserve, "the farthest holds back");
+
+        // Now push two members into melee range: nobody is held back.
+        let m2 = [
+            mem(1, Vec3::new(0.0, 0.0, -2.0)), // within melee_range + pad (3.9)
+            mem(2, Vec3::new(1.0, 0.0, -2.0)), // within melee_range + pad
+            mem(3, Vec3::new(-2.0, 0.0, -12.0)),
+        ];
+        let roles2 = compute_squad_roles(&m2, Vec3::ZERO, PR, &none);
+        let n_reserve2 = roles2.values().filter(|&&r| r == SquadRole::Reserve).count();
+        assert_eq!(n_reserve2, 0, "two engaged => reserve commits");
+    }
+
+    #[test]
+    fn reserve_release_has_an_exit_band() {
+        // Squad of three with exactly one engaged: if it was previously committed
+        // (a member held a flank role last tick), the hold stays released — it only
+        // re-imposes once engaged drops below one.
+        let m = [
+            mem(1, Vec3::new(0.0, 0.0, -2.0)), // engaged (within 3.9)
+            mem(2, Vec3::new(4.0, 0.0, -6.0)), // not engaged
+            mem(3, Vec3::new(-2.0, 0.0, -12.0)),
+        ];
+        // Fresh (no history): one engaged < 2 => one reserve.
+        let fresh = compute_squad_roles(&m, Vec3::ZERO, PR, &HashMap::new());
+        assert_eq!(fresh.values().filter(|&&r| r == SquadRole::Reserve).count(), 1);
+
+        // With history showing the squad already committed, one engaged keeps it so.
+        let mut prev = HashMap::new();
+        prev.insert(ent(1), SquadRole::Baiter);
+        prev.insert(ent(2), SquadRole::FlankRight);
+        prev.insert(ent(3), SquadRole::FlankLeft);
+        let held = compute_squad_roles(&m, Vec3::ZERO, PR, &prev);
+        assert_eq!(
+            held.values().filter(|&&r| r == SquadRole::Reserve).count(),
+            0,
+            "stays committed in the mid-band"
+        );
+    }
+
+    #[test]
+    fn baiter_is_sticky_within_hysteresis_margin() {
+        // Two near-equal contenders; entity 1 was baiter last tick and is only
+        // slightly farther than entity 2 now (< BAITER_HYSTERESIS) -> it keeps it.
+        let m = [
+            mem(1, Vec3::new(0.0, 0.0, -5.2)),
+            mem(2, Vec3::new(0.0, 0.0, -5.0)), // marginally nearer
+        ];
+        let mut prev = HashMap::new();
+        prev.insert(ent(1), SquadRole::Baiter);
+        let roles = compute_squad_roles(&m, Vec3::ZERO, PR, &prev);
+        assert_eq!(roles[&ent(1)], SquadRole::Baiter, "previous baiter holds within margin");
+
+        // But a clearly nearer rival (> margin) takes the role.
+        let m2 = [
+            mem(1, Vec3::new(0.0, 0.0, -8.0)),
+            mem(2, Vec3::new(0.0, 0.0, -5.0)),
+        ];
+        let roles2 = compute_squad_roles(&m2, Vec3::ZERO, PR, &prev);
+        assert_eq!(roles2[&ent(2)], SquadRole::Baiter, "decisive challenger wins");
+    }
+
+    #[test]
+    fn flank_arcs_behind_when_in_front_then_closes_when_abreast() {
+        // A flanker directly in front of the player should NOT just head straight
+        // at the player — it should bias sideways/behind to round the front cone.
+        let in_front = Vec3::new(0.0, 0.0, -8.0);
+        let b = flank_bearing(in_front, Vec3::ZERO, PF, PR, true, 2.4, Vec3::new(0.0, 0.0, -1.0));
+        // "toward player" for a front flanker is +Z; an arcing bearing must carry a
+        // real sideways (+x for FlankRight) component and not be a pure head-on run.
+        assert!(b.x > 0.3, "front flanker arcs to its right, got {b:?}");
+
+        // Once it is abreast/behind the player, it drives straight into melee.
+        let abreast = Vec3::new(8.0, 0.0, 0.0); // 90° to the side
+        let to_player = (Vec3::ZERO - abreast).normalize_or_zero();
+        let b2 = flank_bearing(abreast, Vec3::ZERO, PF, PR, true, 2.4, to_player);
+        assert!(b2.distance(to_player) < 1e-4, "abreast flanker closes straight in");
+    }
+
+    #[test]
+    fn flank_target_is_inside_melee_range() {
+        // The transit waypoint a front flanker steers toward must sit within melee
+        // range of the player (so arriving == being in attack reach), unlike the old
+        // fixed 6u standoff. Reconstruct the waypoint from the bearing geometry.
+        let melee = 2.4;
+        let behind = (melee * 0.8_f32).max(0.5);
+        let target = Vec3::ZERO + PR * FLANK_RADIUS - PF * behind;
+        // The waypoint's *distance behind* the player is within melee range.
+        assert!(behind <= melee, "behind offset {behind} within melee {melee}");
+        // And it is genuinely behind the player (negative along forward), not in front.
+        assert!(target.dot(PF) < 0.0, "waypoint sits behind the player");
+    }
+
+    #[test]
+    fn walkfree_falls_back_to_chase_when_blocked() {
+        let pos = Vec3::new(0.0, 0.0, 0.0);
+        let half = Vec3::new(0.4, 0.9, 0.4);
+        let primary = Vec3::new(1.0, 0.0, 0.0); // +x
+        let mirror = Vec3::new(-1.0, 0.0, 0.0); // -x
+        let fallback = Vec3::new(0.0, 0.0, -1.0); // toward player
+
+        // No walls: the primary bearing is taken unchanged.
+        let open = pick_walkfree_bearing(pos, half, primary, mirror, fallback, &[]);
+        assert_eq!(open, primary);
+
+        // A wall straight ahead on +x within FLANK_PROBE but the mirror side open:
+        // the mirrored flank is chosen rather than collapsing to head-on.
+        let wall_px = Aabb::from_center_half(Vec3::new(2.0, 1.0, 0.0), Vec3::new(0.5, 2.0, 4.0));
+        let m = pick_walkfree_bearing(pos, half, primary, mirror, fallback, &[wall_px]);
+        assert_eq!(m, mirror, "open mirror side is preferred over head-on");
+
+        // Both flank sides walled in: fall back to direct chase (never freeze).
+        let wall_nx = Aabb::from_center_half(Vec3::new(-2.0, 1.0, 0.0), Vec3::new(0.5, 2.0, 4.0));
+        let f = pick_walkfree_bearing(pos, half, primary, mirror, fallback, &[wall_px, wall_nx]);
+        assert_eq!(f, fallback, "boxed in => plain chase");
     }
 }

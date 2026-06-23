@@ -213,6 +213,7 @@ pub(crate) fn player_move(
     keys: Res<ButtonInput<KeyCode>>,
     colliders: Res<WorldColliders>,
     active: Res<crate::vehicle::ActiveVehicle>,
+    mount: Res<crate::mount::ActiveMount>,
     mut q: Query<(&mut Transform, &mut Player, &mut Knockback, &mut crate::weapons::Grapple)>,
     mut sfx: MessageWriter<Sfx>,
 ) {
@@ -222,9 +223,10 @@ pub(crate) fn player_move(
     }
     let Ok((mut tf, mut p, mut kb, mut grap)) = q.single_mut() else { return };
 
-    // While driving a vehicle, WASD/Space belong to the truck — the player just
-    // stands on the deck (carried by `vehicle_carry`) but still falls/collides.
-    let driving = active.0.is_some();
+    // While driving a vehicle OR riding a mounted Ogre, WASD/Space belong to the
+    // vehicle/mount — the player just stands on the deck/saddle (carried by
+    // `vehicle_carry` / `mount_carry`) but still falls/collides.
+    let driving = active.0.is_some() || mount.0.is_some();
 
     // Consume any accumulated knockback (rocket jumps, enemy hits).
     if kb.0 != Vec3::ZERO {

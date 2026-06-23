@@ -368,6 +368,18 @@ fn sever() -> Vec<f32> {
     b.finish(0.9)
 }
 
+fn lodestone() -> Vec<f32> {
+    // An energy well powering up: a low rising sweep under a vibrato'd buzz with a
+    // touch of noise — an ominous warbling charge/hum, distinct from the boom (~0.7s).
+    let mut b = Buf::secs(0.7);
+    b.sine_sweep(70.0, 150.0, 0.8, 1.5); // low rising swell
+    b.buzz(110.0, 9.0, 0.5, 2.0); // warbling well hum
+    b.buzz(160.0, 6.0, 0.25, 2.5); // overtone shimmer
+    b.noise(0.2, 3.0, 0.18, 0x10de); // faint energy fizz
+    b.attack(0.02);
+    b.finish(0.7)
+}
+
 fn ambient() -> Vec<f32> {
     // low, slowly-beating drone, loopable (~3s)
     let mut b = Buf::secs(3.0);
@@ -417,6 +429,7 @@ fn table() -> Vec<(&'static str, fn() -> Vec<f32>)> {
         ("whip.wav", whip),
         ("rope_taut.wav", rope_taut),
         ("sever.wav", sever),
+        ("lodestone.wav", lodestone),
     ]
 }
 
