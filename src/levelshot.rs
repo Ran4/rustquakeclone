@@ -4,14 +4,13 @@
 
 use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::light::GlobalAmbientLight;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy::render::view::Msaa;
 
 use crate::common::*;
-use crate::level::{apply_theme_and_build, LavaVolumes, PlayerStart, SpawnPlan};
+use crate::level::{apply_theme_and_build, LavaVolumes, PlayerStart, SpawnPlan, StyleOut};
 
 #[derive(Component)]
 pub struct ShotCam;
@@ -45,9 +44,7 @@ pub fn tick(
     mut plan: ResMut<SpawnPlan>,
     mut lava: ResMut<LavaVolumes>,
     mut gfx: ResMut<GfxAssets>,
-    mut style: ResMut<LevelStyle>,
-    mut clear: ResMut<ClearColor>,
-    mut ambient: ResMut<GlobalAmbientLight>,
+    mut so: StyleOut,
     mut st: ResMut<LevelShot>,
     q_old: Query<Entity, With<LevelEntity>>,
     q_cam: Query<Entity, With<ShotCam>>,
@@ -67,9 +64,10 @@ pub fn tick(
             }
             let _bounds = apply_theme_and_build(
                 st.idx, &mut commands, &mut meshes, &mut materials, &assets, &mut colliders,
-                &mut start, &mut plan, &mut lava, &mut gfx, &mut style, &mut clear, &mut ambient,
+                &mut start, &mut plan, &mut lava, &mut gfx, &mut so.style, &mut so.clear,
+                &mut so.ambient, &mut so.resonant,
             );
-            spawn_shot_cam(&mut commands, start.pos, start.yaw, &style);
+            spawn_shot_cam(&mut commands, start.pos, start.yaw, &so.style);
             st.t = 0.0;
             st.stage = Stage::Settle;
         }

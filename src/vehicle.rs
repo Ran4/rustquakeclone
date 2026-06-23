@@ -555,12 +555,19 @@ fn vehicle_ram(
         let dir = planar / speed;
         let t = vtf.translation;
         for (e, etf, mut en, hp) in &mut q_enemy {
-            if hp.dead || en.ram_cd > 0.0 || !rammed(etf.translation, en.half, t, v.yaw) {
+            if en.ram_cd > 0.0 || !rammed(etf.translation, en.half, t, v.yaw) {
                 continue;
             }
             en.ram_cd = RAM_CD;
-            let amount = (speed * 2.0).clamp(15.0, 90.0);
             let knockback = dir * (speed * 0.6).clamp(7.0, 24.0) + Vec3::Y * 5.0;
+            if hp.dead {
+                // A ragdoll-brush corpse (feature 17): no damage to deal, but the
+                // truck still shoves the body aside (knockback-only, picked up by
+                // `corpse_physics`) so you can plough a fresh corpse off the deck.
+                dmg.write(DamageEvent::body(e, 0.0, None, knockback));
+                continue;
+            }
+            let amount = (speed * 2.0).clamp(15.0, 90.0);
             dmg.write(DamageEvent::body(e, amount, None, knockback));
             sfx.write(Sfx::at(Sound::RamHit, etf.translation));
         }

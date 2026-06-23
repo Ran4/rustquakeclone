@@ -127,11 +127,23 @@ pub fn raycast_world(
     max: f32,
     solids: &[Aabb],
 ) -> Option<(f32, Vec3, Vec3)> {
-    let mut best: Option<(f32, Vec3, Vec3)> = None;
-    for b in solids {
+    raycast_world_indexed(origin, dir, max, solids).map(|(_, t, p, n)| (t, p, n))
+}
+
+/// Like [`raycast_world`] but also hands back which `solids` slot the nearest hit
+/// belongs to, so callers can map a beam back to a specific brush (feature 29:
+/// the Lightning Gun needs the hit slot to look up a resonant brush's profile).
+pub fn raycast_world_indexed(
+    origin: Vec3,
+    dir: Vec3,
+    max: f32,
+    solids: &[Aabb],
+) -> Option<(usize, f32, Vec3, Vec3)> {
+    let mut best: Option<(usize, f32, Vec3, Vec3)> = None;
+    for (i, b) in solids.iter().enumerate() {
         if let Some((t, n)) = ray_aabb(origin, dir, max, b) {
-            if best.map_or(true, |(bt, _, _)| t < bt) {
-                best = Some((t, origin + dir * t, n));
+            if best.map_or(true, |(_, bt, _, _)| t < bt) {
+                best = Some((i, t, origin + dir * t, n));
             }
         }
     }

@@ -30,6 +30,15 @@ pub(crate) fn handle_explosions(
     for ex in explosions.read() {
         for (e, gt, hb, faction) in &targets {
             let self_blast = ex.source == Some(e);
+            // Whip-parried (returned) blast: it's now player-owned, but the player
+            // who batted it back must NEVER be hurt by its splash (feature 39, the
+            // #1 correctness requirement). The player is the blast's `source`, so
+            // skipping the source entirely makes that immunity airtight regardless
+            // of where the returned grenade detonates. Monsters are untouched by
+            // this guard and still take the full returned-grenade splash.
+            if ex.returned && self_blast {
+                continue;
+            }
             if !ex.from_player && *faction == Faction::Monster {
                 continue; // monster splash doesn't harm other monsters (incl. the firer)
             }
@@ -136,6 +145,15 @@ fn apply_damage(
             continue;
         };
         if hp.dead {
+            // A dead body still takes knockback (feature 17 ragdoll-brush corpses):
+            // a rocket splash / Whip fling / ram impulse must reach its `Knockback`
+            // so `corpse_physics` can skid it. We accumulate the impulse only —
+            // the damage/pain/sever arms below are for the living, so we stop here.
+            if ev.knockback != Vec3::ZERO {
+                if let Some(mut k) = kb {
+                    k.0 += ev.knockback;
+                }
+            }
             continue;
         }
         let en_kind = enemies.get(resolved).ok().map(|e| e.kind);

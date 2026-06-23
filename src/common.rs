@@ -31,6 +31,79 @@ pub mod tune {
     pub const WALLJUMP_PUSH: f32 = 4.5;
     pub const WALLJUMP_REACH: f32 = 0.2;
 
+    // --- Wall-run (feature 37) ----------------------------------------------
+    // A *sustained* sibling of the wall-jump tap: while airborne, carrying speed,
+    // holding a move key, and pressed against a wall, you latch flat to the face
+    // and sprint along it (a touch upward) for a short stamina window instead of
+    // peeling away. The wall-jump tap stays live — tapping Space mid-run kicks you
+    // off exactly as before. Everything writes to `Player.vel` and is handed to
+    // `move_and_slide` as normal locomotion; nothing new touches the collider list.
+    //
+    /// How close the AABB must be to a wall's surface (m) to latch a wall-run.
+    /// A touch more generous than `WALLJUMP_REACH` so you can latch by leaning in
+    /// without grinding the brush, but still "you must be against the wall".
+    pub const WALLRUN_REACH: f32 = 0.45;
+    /// Minimum horizontal speed (m/s) needed to latch / stay latched. Below this
+    /// you're not "running" — you slide off. Set ABOVE the 9.0 walk speed so a
+    /// plain stroll-jump never latches by accident in tight corridor fighting,
+    /// but still comfortably under a strafe-jump / bunny-hop so it stays a
+    /// momentum verb you can reach on purpose.
+    pub const WALLRUN_MIN_SPEED: f32 = 10.5;
+    /// How much of gravity survives while latched (the rest is cancelled so you
+    /// stick to the face). 0.18 → almost all of gravity is held off, and against
+    /// the up-bias below the net vertical drift is a touch UPWARD — you "run flat
+    /// along the brickwork (and a touch upward)" per the feature, not plummet.
+    /// (See WALLRUN_UP_MAX.)
+    pub const WALLRUN_GRAVITY_FRAC: f32 = 0.18;
+    /// Along-the-wall acceleration (1/s, Quake-accelerate style) added in the
+    /// direction you're already travelling. Brisk enough to *feel* like a sprint
+    /// boost, capped by `WALLRUN_MAX_SPEED` so it can't run away.
+    pub const WALLRUN_ACCEL: f32 = 30.0;
+    /// Speed cap (m/s) the along-wall accelerate chases — the wall-run sprint
+    /// ceiling. Well above ground run so blurring a span feels earned, but finite.
+    pub const WALLRUN_MAX_SPEED: f32 = 16.0;
+    /// Rate (1/s) the wall-run eases `vel.y` toward `WALLRUN_UP_MAX`, so a fall
+    /// you latch from arrests quickly instead of plummeting — it catches you,
+    /// then holds you near level.
+    pub const WALLRUN_UP_BIAS: f32 = 2.2;
+    /// Ceiling (m/s) the assisted-hold eases `vel.y` toward. Against the surviving
+    /// gravity fraction this settles the net vertical drift at ~+0.2 m/s — a gentle
+    /// "touch upward" so a run reads as flat-to-slightly-climbing (per the feature
+    /// brief), letting you wall-run to build a horizontal line and wall-jump off its
+    /// end for the real height. Keep modest: a much larger value (3.5+ gives ~+1.4
+    /// m/s) turns the run into a free ascent (see WALLRUN_GRAVITY_FRAC).
+    pub const WALLRUN_UP_MAX: f32 = 2.4;
+    /// Stamina window (s) a single latch lasts before it forces a peel-off. Tuned
+    /// so one run crosses a long span but not the whole map; refills on the ground.
+    pub const WALLRUN_STAMINA: f32 = 1.6;
+    /// Seconds of grounded contact it takes to recharge a full `WALLRUN_STAMINA`
+    /// from empty (linear). Refilling is gradual, not instant, so a single
+    /// grazing-floor frame mid-run (or a one-frame bunny-hop touch between runs)
+    /// can't top you back up — you must actually return to the ground to chain
+    /// another full run. A touch slower than the burn so back-to-back runs cost.
+    pub const WALLRUN_RECHARGE: f32 = 2.0;
+    /// Grounded dwell (s) required before stamina starts recharging at all. A
+    /// single floor-graze frame during a wall-run (a wall that meets the floor)
+    /// trips `on_ground` for a frame or two; requiring a brief dwell first means
+    /// such a graze can't refill the run into an infinite grind.
+    pub const WALLRUN_GROUND_DWELL: f32 = 0.1;
+    /// Seconds of grace the latch survives with NO wall detected (e.g. crossing a
+    /// convex brush seam where the swept solver flickers its normal). The smoothed
+    /// normal is kept through the gap so you flow across a join instead of
+    /// stuttering off it. A couple frames at 60fps.
+    pub const WALLRUN_COYOTE: f32 = 0.08;
+    /// 1/s the latched wall normal low-passes toward the freshly probed one, so a
+    /// seam where two faces hand back competing normals blends smoothly rather
+    /// than snapping the run sideways.
+    pub const WALLRUN_NORMAL_SMOOTH: f32 = 18.0;
+    /// Wall-run scuff loop volume at the latch speed floor (`WALLRUN_MIN_SPEED`).
+    pub const WALLRUN_SCUFF_MIN_VOL: f32 = 0.12;
+    /// Wall-run scuff loop volume at full sprint (`WALLRUN_MAX_SPEED`).
+    pub const WALLRUN_SCUFF_MAX_VOL: f32 = 0.5;
+    /// 1/s the scuff loop's volume chases its speed-driven target (snappier than
+    /// the engine so it bites in fast on latch and drops on peel-off).
+    pub const WALLRUN_SCUFF_SMOOTH: f32 = 8.0;
+
     /// Cap on downward fall speed (m/s). A fall accelerates up to this and then
     /// holds, so a long drop reads as a steady, trackable plunge instead of
     /// runaway acceleration. Set well above any normal-gameplay fall (you only
@@ -60,6 +133,115 @@ pub mod tune {
     /// Auto-detach after this many consecutive frames pinned taut against a wall
     /// (scraping a corner) with almost no speed — the anti solver-fight backstop.
     pub const GRAPPLE_STUCK_FRAMES: u32 = 12;
+
+    // --- Ragdoll-brush corpses (feature 17) ----------------------------------
+    /// How many corpses can be live moving colliders at once. A hard cap so a
+    /// massacre can't spawn dozens of swept boxes and tank the frame; pool slots
+    /// are reserved at level build time and recycled by a runtime free-list. When
+    /// the pool is full a fresh kill stays a *decorative* topple (no collider) —
+    /// the existing bodies keep their slots rather than the new one stealing one.
+    pub const CORPSE_CAP: usize = 6;
+    /// Restitution: fraction of into-surface speed a knocked corpse rebounds out
+    /// of a wall (a little bouncier than the truck so a rocketed body skips).
+    pub const CORPSE_REST: f32 = 0.35;
+    /// 1/s ground-drag that bleeds a corpse's horizontal skid to rest, so a body
+    /// settles into cover quickly instead of sliding forever (and so a resting
+    /// corpse can't keep nudging the player into geometry).
+    pub const CORPSE_GROUND_DRAG: f32 = 6.0;
+    /// 1/s air-drag on a tumbling corpse's horizontal velocity (much lighter, so
+    /// a flung body keeps its arc until it lands).
+    pub const CORPSE_AIR_DRAG: f32 = 0.6;
+    /// Speed (m/s) below which a *grounded* corpse is parked dead-still — kills
+    /// resting micro-jitter that would otherwise creep the body around.
+    pub const CORPSE_SLEEP_SPEED: f32 = 0.4;
+    /// Lift (m) given to a fresh corpse so its box settles on the swept solver's
+    /// SKIN gap rather than exactly on the floor boundary (the truck's gotcha:
+    /// a box centred on a floor face freezes the sweep).
+    pub const CORPSE_SPAWN_LIFT: f32 = 0.05;
+    /// Slip (m/s) at which the corpse's slide plays a faint settle/scrape cue.
+    pub const CORPSE_SCRAPE_SPEED: f32 = 2.0;
+    /// `Dying.t` (s) at which a corpse stops being a SOLID collider and begins
+    /// sinking into the floor (collider slot released, `animate_death` owns the
+    /// descent). The topple finishes at t≈0.7, so this is how long a body is
+    /// usable cover — long enough to shove a body, reposition and exploit it.
+    /// MUST stay coupled with `CORPSE_DESPAWN_AT` (sink → vanish) and the matching
+    /// `t` thresholds in `monster_model::animate_death`.
+    pub const CORPSE_SINK_BEGINS: f32 = 7.0;
+    /// `Dying.t` (s) at which a sunk corpse despawns (frees the entity). Two
+    /// seconds of sink ramp after `CORPSE_SINK_BEGINS`.
+    pub const CORPSE_DESPAWN_AT: f32 = 9.0;
+
+    // --- Resonant brushwork / sonic demolition (feature 29) ------------------
+    /// Charge a single Lightning beam PULSE pours into the resonant brush it lands
+    /// on. The beam fires one pulse per its `0.06s` cooldown (not once per frame),
+    /// so we charge per pulse — frame-rate-independent. The shatter threshold is
+    /// normalised to 1.0, so `0.030 * (1/0.06) ≈ 0.5/s` cracks a brush in ~2.2s of
+    /// held beam — a tense fistful of Cells under fire ("~1.5-3s of Cells" bet).
+    pub const RESONANT_CHARGE_PER_PULSE: f32 = 0.030;
+    /// Charge decay per second once the beam leaves a brush. Only applied after a
+    /// short grace (`RESONANT_DECAY_GRACE`) so the inter-pulse gap frames (the beam
+    /// pulses every ~0.06s, i.e. several frames apart) don't bleed off the charge
+    /// you just deposited. Faster than it charges, so you must COMMIT: glance away
+    /// and the note sags back down, costing you the progress (and the Cells).
+    pub const RESONANT_DECAY_RATE: f32 = 0.65;
+    /// Grace window (s) after a brush's last beam pulse before decay kicks in. Must
+    /// comfortably exceed the Lightning cooldown (`0.06s`) so a continuously-held
+    /// beam never decays between its pulses, yet be short enough that releasing the
+    /// beam sags the note within a blink.
+    pub const RESONANT_DECAY_GRACE: f32 = 0.12;
+    /// Charge (normalised) at which the brush hits its shatter note and detonates.
+    pub const RESONANT_SHATTER: f32 = 1.0;
+    /// Impact-ring telegraph: a struck (pellet/nail/body) resonant brush briefly
+    /// rings at its tone so it's audibly "an instrument". This is the loudest such
+    /// ring (scaled down by how soft the hit was); kept modest to avoid spam.
+    pub const RESONANT_RING_VOL: f32 = 0.45;
+
+    // --- Whip parry / bat-the-bolt-back (feature 39) -------------------------
+    // A left-click Whip swing opens a brief parry window. While it's open, the
+    // Whip's existing melee arc/range is swept against every ENEMY-owned
+    // projectile body; one caught in the arc is REFLECTED back along its incoming
+    // path and FLIPPED enemy->player (a clean parry), or just POPPED out of the
+    // air harmlessly (a late/sloppy swing). Either way the player eats nothing.
+    //
+    /// Total active parry window (s) from the moment the Whip swings. Generous
+    /// enough to feel read-and-react, short enough that the Whip isn't a passive
+    /// bullet shield (it's a fraction of the 0.75s whip refire cooldown).
+    pub const PARRY_WINDOW: f32 = 0.16;
+    /// The PERFECT sub-window (s) at the very START of the parry window. A parry
+    /// landed inside this leading slice gets the speed + homing bonus; after it
+    /// (but still within `PARRY_WINDOW`) is a normal "late" parry that still
+    /// deflects but with no bonus.
+    pub const PARRY_PERFECT_WINDOW: f32 = 0.06;
+    /// Extra padding (m) added to the Whip's melee reach for the parry sweep, so a
+    /// bolt skimming just past the lash tip still counts as batted. Kept small so
+    /// the parry isn't a giant invisible net — it tracks the visible lash.
+    pub const PARRY_REACH_PAD: f32 = 1.0;
+    /// Lateral catch radius (m) around the swing ray a projectile must be within to
+    /// count as "in the arc". The Whip is a sweep, not a pin-prick, so this is a
+    /// fat cylinder along the aim, not the projectile's own tiny radius.
+    pub const PARRY_CATCH_RADIUS: f32 = 1.6;
+    /// Speed multiplier applied to a PERFECT-parried projectile's returned velocity
+    /// (a late parry returns it at 1.0x). Makes a perfectly-timed return scream.
+    pub const PARRY_PERFECT_SPEED: f32 = 1.6;
+    /// Homing strength (0..1) of a PERFECT parry: how far the reflected velocity is
+    /// re-aimed from its pure mirror toward the original shooter. 0 = pure reflect,
+    /// 1 = dead-on at the shooter. A nudge, not a guided missile.
+    pub const PARRY_HOMING: f32 = 0.5;
+    /// Homing strength (0..1) of a LATE parry. A pure mirror amplifies your aim
+    /// error ~2x and a late-parried bolt usually whiffs the shooter; a small nudge
+    /// gives it a fighting chance to connect while keeping the PERFECT parry clearly
+    /// better (it both speeds up AND homes harder). Smaller than `PARRY_HOMING`.
+    pub const PARRY_HOMING_LATE: f32 = 0.2;
+    /// Damage multiplier on a returned projectile from a LATE parry. A bare deflect
+    /// (you take no damage) is good, but at 1.0x a returned 10-dmg bolt can never
+    /// threaten the shooter, so the parry reads as purely defensive. A modest bump
+    /// makes even a late return a real chip without one-shotting anything.
+    pub const PARRY_RETURN_DAMAGE: f32 = 2.0;
+    /// Damage multiplier on a returned projectile from a PERFECT parry — the kill
+    /// window. Concentrated here so a clean read actually turns the tables (e.g. a
+    /// perfect-parried bolt drops a Scrag/Enforcer in two), still gated by the ~21%
+    /// shield uptime and the requirement to aim back at the shooter.
+    pub const PARRY_PERFECT_DAMAGE: f32 = 3.0;
 }
 
 // ----------------------------------------------------------------------------
@@ -224,6 +406,12 @@ pub struct ExplosionEvent {
     /// If this blast came from a projectile that struck a specific limb directly,
     /// the (target, limb) it hit — so splash focuses that limb.
     pub direct_limb: Option<(Entity, LimbGroup)>,
+    /// True when this blast came from a Whip-parried (returned) projectile (feature
+    /// 39). The projectile is now player-owned, but the player who batted it back
+    /// must NEVER be hurt by its splash: `handle_explosions` skips the explosion's
+    /// `source` (the player) entirely for a returned blast. Makes the parry's
+    /// self-immunity airtight regardless of blast geometry.
+    pub returned: bool,
 }
 
 /// A monster corpse left behind on death; fades out after the timer.
@@ -256,6 +444,20 @@ impl Sfx {
     pub fn pitched(sound: Sound, pos: Vec3, pitch: f32) -> Self {
         Self { sound, pos: Some(pos), volume: 1.0, pitch }
     }
+}
+
+/// A hitscan ray ended on a world brush (feature 29). The resonance system reads
+/// these to charge a resonant brush the Lightning beam is dwelling on (`beam`)
+/// or to ring one that a pellet/nail just struck (a telegraph). One per ray that
+/// terminates on geometry; non-resonant slots are ignored downstream.
+#[derive(Message)]
+pub struct BrushStrike {
+    /// Index into `WorldColliders.solids`.
+    pub slot: usize,
+    pub point: Vec3,
+    /// True for a Lightning-beam pulse (drives the sweep), false for a one-shot
+    /// hit (drives the impact ring).
+    pub beam: bool,
 }
 
 /// Camera kick / screen shake impulse.
@@ -320,6 +522,26 @@ pub enum Sound {
     TireScreech,
     Crash,
     RamHit,
+    /// Faint meaty scrape/thud as a knocked corpse skids and settles (feature 17).
+    CorpseSettle,
+    /// Looping clean sine hum a resonant brush sings while the Lightning beam
+    /// dwells on it; the game scrubs its pitch up toward the shatter note and its
+    /// volume with dwell (feature 29).
+    ResonantHum,
+    /// Short, decaying one-shot "tink" a resonant brush rings with when struck by a
+    /// pellet/nail/body (feature 29) — the percussive telegraph, distinct from the
+    /// sustained `ResonantHum` loop the held beam drives.
+    ResonantRing,
+    /// The crack-and-pop when a resonant brush reaches its shatter note and
+    /// detonates into gibs (feature 29).
+    ResonantShatter,
+    /// Looping gritty scuff/scrape of boots dragging along a wall while wall-running
+    /// (feature 37); the game fades its volume in with wall-run speed and stops it
+    /// the instant you peel off.
+    WallrunScuff,
+    /// Sharp metallic "ting" the Whip rings when it parries an incoming projectile
+    /// out of the air (feature 39) — a struck-steel ping, perfect parries pitched up.
+    MetallicTing,
 }
 impl Sound {
     pub fn file(self) -> &'static str {
@@ -358,9 +580,15 @@ impl Sound {
             Sound::TireScreech => "sounds/tire_screech.wav",
             Sound::Crash => "sounds/crash.wav",
             Sound::RamHit => "sounds/ram_hit.wav",
+            Sound::CorpseSettle => "sounds/corpse_settle.wav",
+            Sound::ResonantHum => "sounds/resonant_hum.wav",
+            Sound::ResonantRing => "sounds/resonant_ring.wav",
+            Sound::ResonantShatter => "sounds/resonant_shatter.wav",
+            Sound::WallrunScuff => "sounds/wallrun_scuff.wav",
+            Sound::MetallicTing => "sounds/metallic_ting.wav",
         }
     }
-    pub fn all() -> [Sound; 33] {
+    pub fn all() -> [Sound; 39] {
         use Sound::*;
         [
             Shotgun, SuperShotgun, Nailgun, RocketFire, GrenadeFire, Explosion,
@@ -368,6 +596,8 @@ impl Sound {
             PickupWeapon, KeyPickup, Jump, Land, PlayerPain, PlayerDeath,
             EnemySight, EnemyPain, EnemyDeath, Door, Victory, Ambient, Lightning,
             Whip, RopeTaut, Sever, Lodestone, EngineLoop, EngineStart, TireScreech, Crash, RamHit,
+            CorpseSettle, ResonantHum, ResonantRing, ResonantShatter, WallrunScuff,
+            MetallicTing,
         ]
     }
 }

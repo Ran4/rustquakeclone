@@ -10,9 +10,9 @@ use crate::common::*;
 use crate::effects::{spawn_muzzle_flash, Lifetime};
 use crate::monster_model::nearest_limb_hit;
 use crate::mount::{ActiveMount, WhipHit};
-use crate::physics::{line_of_sight, ray_aabb, raycast_world, Aabb};
+use crate::physics::{line_of_sight, ray_aabb, raycast_world, raycast_world_indexed, Aabb};
 use crate::player::{Player, PlayerCamera};
-use crate::projectiles::{spawn_projectile, ProjKind};
+use crate::projectiles::{spawn_projectile, ProjKind, WhipParry};
 use crate::vehicle::ActiveVehicle;
 
 pub struct WeaponsPlugin;
@@ -372,6 +372,8 @@ pub(crate) struct FireWriters<'w> {
     whip_hit: MessageWriter<'w, WhipHit>,
     sfx: MessageWriter<'w, Sfx>,
     shake: MessageWriter<'w, ScreenShake>,
+    /// Brush hits feeding the resonance system (feature 29).
+    brush: MessageWriter<'w, BrushStrike>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -390,6 +392,7 @@ pub(crate) fn fire_weapon(
     targets: Query<(Entity, &GlobalTransform, &Hurtbox, &Faction), With<Health>>,
     mut w: FireWriters,
     mut kick: ResMut<ViewKick>,
+    mut parry: ResMut<WhipParry>,
 ) {
     let dt = time.delta_secs();
     let Ok((pe, mut inv)) = q_player.single_mut() else { return };
@@ -467,12 +470,18 @@ pub(crate) fn fire_weapon(
         Mode::Hitscan { pellets, spread, damage } => {
             for _ in 0..pellets {
                 let d = spread_dir(forward, spread, rand(), rand());
-                hitscan(&mut commands, &colliders, &targets, &limb_boxes, &gfx, origin, d, damage, pe, false, &mut w.dmg, &mut w.impact);
+                if let Some((slot, point)) = hitscan(&mut commands, &colliders, &targets, &limb_boxes, &gfx, origin, d, damage, pe, false, &mut w.dmg, &mut w.impact) {
+                    // A struck brush may ring (resonance telegraph) — one-shot.
+                    w.brush.write(BrushStrike { slot, point, beam: false });
+                }
             }
         }
         Mode::Beam { damage } => {
             let d = spread_dir(forward, 0.005, rand(), rand());
-            hitscan(&mut commands, &colliders, &targets, &limb_boxes, &gfx, origin, d, damage, pe, true, &mut w.dmg, &mut w.impact);
+            if let Some((slot, point)) = hitscan(&mut commands, &colliders, &targets, &limb_boxes, &gfx, origin, d, damage, pe, true, &mut w.dmg, &mut w.impact) {
+                // The beam is dwelling on this brush this frame — feeds the sweep.
+                w.brush.write(BrushStrike { slot, point, beam: true });
+            }
         }
         Mode::Projectile(ProjKind::Nail) => {
             // Twin-barrel alternating nail stream.
@@ -487,9 +496,15 @@ pub(crate) fn fire_weapon(
         Mode::Melee { damage, range, knockback } => {
             let (end, hit) = melee_strike(&colliders, &targets, &limb_boxes, origin, forward, range, damage, knockback, pe, &mut w.dmg, &mut w.impact);
             draw_whip(&mut commands, &gfx, muzzle, end);
-            // A Whip lash that connects with a monster flags it for the mount
-            // system (which opens a Mountable window on Ogre targets).
             if inv.current == WeaponKind::Whip {
+                // Open the parry window (feature 39): for the next brief moment the
+                // Whip's SAME melee arc (origin/dir/range captured here) is swept
+                // against enemy projectiles by `projectiles::whip_parry`. Reusing the
+                // melee geometry means the parry tracks the visible lash, not a
+                // second hitbox.
+                parry.open(origin, forward, range, pe);
+                // A Whip lash that connects with a monster flags it for the mount
+                // system (which opens a Mountable window on Ogre targets).
                 if let Some(target) = hit {
                     w.whip_hit.write(WhipHit { target });
                 }
@@ -756,6 +771,10 @@ fn spread_dir(forward: Vec3, spread: f32, rx: f32, ry: f32) -> Vec3 {
     (forward + right * (rx * spread) + up2 * (ry * spread)).normalize_or_zero()
 }
 
+/// Fire one hitscan ray. Returns the world collider slot the ray TERMINATED on
+/// (plus the hit point) when it ended on geometry rather than a monster — so the
+/// caller can tie that slot to a resonant brush (feature 29: beam dwell + the
+/// struck-brush ring telegraph). `None` when the ray hit a monster or nothing.
 #[allow(clippy::too_many_arguments)]
 fn hitscan(
     commands: &mut Commands,
@@ -770,11 +789,11 @@ fn hitscan(
     beam: bool,
     dmg: &mut MessageWriter<DamageEvent>,
     impact: &mut MessageWriter<ImpactEvent>,
-) {
+) -> Option<(usize, Vec3)> {
     let max = 200.0;
     // Nearest wall first, so monster/limb hits only count in front of it.
-    let wall = raycast_world(origin, dir, max, &colliders.solids);
-    let wall_t = wall.map(|(t, _, _)| t).unwrap_or(max);
+    let wall = raycast_world_indexed(origin, dir, max, &colliders.solids);
+    let wall_t = wall.map(|(_, t, _, _)| t).unwrap_or(max);
     // Prefer a specific bone box (delivers the per-bone "lead the head" skill);
     // every awake, in-range monster's silhouette is covered by bone boxes.
     let limb = nearest_limb_hit(origin, dir, wall_t, &limb_boxes.boxes, 0.0);
@@ -807,11 +826,16 @@ fn hitscan(
     if let Some((e, g, t, n)) = limb {
         dmg.write(DamageEvent::limb(e, damage, Some(source), dir * 1.5, g));
         impact.write(ImpactEvent { pos: origin + dir * t, normal: n, blood: true });
+        None
     } else if let Some((e, pt, n)) = body_hit {
         dmg.write(DamageEvent::body(e, damage, Some(source), dir * 1.5));
         impact.write(ImpactEvent { pos: pt, normal: n, blood: true });
-    } else if let Some((_, pt, n)) = wall {
+        None
+    } else if let Some((slot, _, pt, n)) = wall {
         impact.write(ImpactEvent { pos: pt, normal: n, blood: false });
+        Some((slot, pt))
+    } else {
+        None
     }
 }
 

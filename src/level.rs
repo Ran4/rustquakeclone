@@ -30,12 +30,25 @@ use bevy::render::mesh::{Indices, PrimitiveTopology};
 use crate::common::*;
 use crate::physics::Aabb;
 
+/// The global styling + resonance outputs a level build writes, bundled into one
+/// `SystemParam` so both [`setup_level`] and the `QC_LEVELSHOT` tick stay under
+/// Bevy's per-system parameter limit (feature 29 pushed them over). Unpacked into
+/// the `&mut` refs `apply_theme_and_build` expects at the call site.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct StyleOut<'w> {
+    pub style: ResMut<'w, LevelStyle>,
+    pub clear: ResMut<'w, ClearColor>,
+    pub ambient: ResMut<'w, GlobalAmbientLight>,
+    pub resonant: ResMut<'w, ResonantBrushes>,
+}
+
 pub struct LevelPlugin;
 impl Plugin for LevelPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlayerStart>()
             .init_resource::<SpawnPlan>()
-            .init_resource::<LavaVolumes>();
+            .init_resource::<LavaVolumes>()
+            .init_resource::<ResonantBrushes>();
     }
 }
 
@@ -54,10 +67,8 @@ pub fn setup_level(
     mut gfx: ResMut<GfxAssets>,
     mut mission: ResMut<Mission>,
     mut run: ResMut<RunState>,
-    mut style: ResMut<LevelStyle>,
     mut intro: ResMut<LevelIntro>,
-    mut clear: ResMut<ClearColor>,
-    mut ambient: ResMut<GlobalAmbientLight>,
+    mut so: StyleOut,
     start_level: Res<StartLevelConfig>,
     asset_server: Res<AssetServer>,
 ) {
@@ -87,7 +98,8 @@ pub fn setup_level(
 
     apply_theme_and_build(
         idx, &mut commands, &mut meshes, &mut materials, &asset_server, &mut colliders,
-        &mut start, &mut plan, &mut lava, &mut gfx, &mut style, &mut clear, &mut ambient,
+        &mut start, &mut plan, &mut lava, &mut gfx, &mut so.style, &mut so.clear, &mut so.ambient,
+        &mut so.resonant,
     );
 }
 
@@ -115,6 +127,7 @@ pub fn apply_theme_and_build(
     style: &mut LevelStyle,
     clear: &mut ClearColor,
     ambient: &mut GlobalAmbientLight,
+    resonant: &mut ResonantBrushes,
 ) -> BuiltBounds {
     let (_, theme_id) = crate::levels::LEVEL_META[idx.min(NUM_LEVELS - 1)];
 
@@ -141,6 +154,7 @@ pub fn apply_theme_and_build(
     plan.exit = None;
     lava.volumes.clear();
     lava.kill_y = f32::NEG_INFINITY;
+    resonant.brushes.clear();
 
     let mut b = Build {
         commands,
@@ -152,6 +166,7 @@ pub fn apply_theme_and_build(
         start,
         plan,
         lava,
+        resonant: &mut resonant.brushes,
     };
     crate::levels::build_index(idx, &mut b);
 
@@ -265,6 +280,59 @@ pub enum ThemeId {
     Dam,
 }
 
+/// The acoustic profile of a brush material (feature 29): the note a surface
+/// rings at when struck, and the pitch it shatters at when the Lightning beam
+/// sweeps it up to its breaking note. Each theme carries a default voice (its
+/// signature surface material — ice tinks high, brass bongs, stone thuds) that a
+/// resonant brush adopts unless overridden at author time.
+#[derive(Clone, Copy, Debug)]
+pub struct AcousticProfile {
+    /// The fundamental ring note (Hz) — what a struck surface sings, and the
+    /// starting pitch of the resonant sweep (charge = 0).
+    pub fundamental_hz: f32,
+    /// How fast the ring decays (1/s); higher = a sharper tink, lower = a long bong.
+    pub damping: f32,
+    /// The shatter note (Hz) — the pitch the sweep climbs to at full charge, when
+    /// the brush detonates. The sweep maps charge 0..1 onto fundamental..shatter.
+    pub shatter_pitch_hz: f32,
+}
+impl AcousticProfile {
+    pub const fn new(fundamental_hz: f32, damping: f32, shatter_pitch_hz: f32) -> Self {
+        Self { fundamental_hz, damping, shatter_pitch_hz }
+    }
+}
+
+/// One resonant brush, tracked in the [`ResonantBrushes`] index (feature 29).
+/// `WorldColliders.solids` is a flat untagged `Vec<Aabb>`, so this is the parallel
+/// record that ties a slot index back to its mesh entity, its tone, and the live
+/// charge a held Lightning beam is building up in it.
+pub struct ResonantBrush {
+    /// Index of this brush's collider in `WorldColliders.solids`.
+    pub slot: usize,
+    /// The brush mesh entity, hidden/despawned when it shatters.
+    pub entity: Entity,
+    /// The note this brush rings/shatters at.
+    pub profile: AcousticProfile,
+    /// Accumulated beam charge, normalised 0..`RESONANT_SHATTER`. Climbs one notch
+    /// per beam pulse landing on this slot, decays off-target — drives the rising
+    /// sweep.
+    pub charge: f32,
+    /// Seconds since the last beam pulse landed on this brush. The beam pulses
+    /// every Lightning cooldown (`0.06s`), several frames apart, so decay only
+    /// starts once this exceeds `RESONANT_DECAY_GRACE` — otherwise the gap frames
+    /// between pulses would bleed off the charge a held beam just deposited.
+    pub since_struck: f32,
+}
+
+/// The live set of resonant brushes for the active level (feature 29), populated
+/// at level build (indices are stable: every resonant brush is laid during the
+/// build, so its slot precedes the corpse pool that's appended afterward). A
+/// brush is removed from the set the frame it shatters.
+#[derive(Resource, Default)]
+pub struct ResonantBrushes {
+    pub brushes: Vec<ResonantBrush>,
+}
+
 /// The resolved material handles + styling for a level.
 pub struct Theme {
     pub floor: Handle<StandardMaterial>,
@@ -285,6 +353,9 @@ pub struct Theme {
     pub hazard_emissive: LinearRgba,
     pub hazard_dot: f32,
     pub hazard_flash: Color,
+    /// The theme's signature surface voice — the ring/shatter note a resonant
+    /// brush in this level sounds (feature 29).
+    pub voice: AcousticProfile,
 }
 
 /// Loader setting that makes a texture wrap (tile) instead of clamping — brush
@@ -334,6 +405,9 @@ struct ThemeSpec {
     clear: Color,
     hazard_dot: f32,
     hazard_flash: Color,
+    /// The theme's signature resonant voice (feature 29): the note its surfaces
+    /// ring at and the pitch a resonant brush shatters at.
+    voice: AcousticProfile,
 }
 
 fn theme_spec(id: ThemeId) -> ThemeSpec {
@@ -350,6 +424,8 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             clear: rgb(0.02, 0.02, 0.03),
             hazard_dot: 12.0,
             hazard_flash: rgb(0.9, 0.35, 0.05),
+            // Dark stone: a low, dull thud that grinds up to a dusty crack.
+            voice: AcousticProfile::new(180.0, 9.0, 520.0),
         },
         Frost => ThemeSpec {
             dir: "textures/world/frost",
@@ -362,6 +438,8 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             clear: rgb(0.5, 0.62, 0.74),
             hazard_dot: 10.0,
             hazard_flash: rgb(0.5, 0.7, 1.0),
+            // Ice: a bright glassy tink that whines up to a high crystalline shriek.
+            voice: AcousticProfile::new(440.0, 16.0, 1320.0),
         },
         Brass => ThemeSpec {
             dir: "textures/world/brass",
@@ -377,6 +455,8 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             clear: rgb(0.07, 0.05, 0.03),
             hazard_dot: 12.0,
             hazard_flash: rgb(1.0, 0.5, 0.15),
+            // Brass plate: a fat metallic bong that rings a long time up to a clang.
+            voice: AcousticProfile::new(260.0, 5.0, 700.0),
         },
         Tomb => ThemeSpec {
             dir: "textures/world/tomb",
@@ -389,6 +469,8 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             clear: rgb(0.32, 0.26, 0.18),
             hazard_dot: 9.0,
             hazard_flash: rgb(0.85, 0.7, 0.3),
+            // Sandstone: a hollow muffled thunk that crumbles up to a dry crack.
+            voice: AcousticProfile::new(150.0, 11.0, 480.0),
         },
         Hive => ThemeSpec {
             dir: "textures/world/hive",
@@ -401,6 +483,8 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             clear: rgb(0.02, 0.05, 0.03),
             hazard_dot: 14.0,
             hazard_flash: rgb(0.4, 0.95, 0.3),
+            // Chitin/membrane: a wet rubbery hum that swells up to a bursting pop.
+            voice: AcousticProfile::new(220.0, 8.0, 600.0),
         },
         Pirate => ThemeSpec {
             dir: "textures/world/pirate",
@@ -413,6 +497,8 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             clear: rgb(0.38, 0.56, 0.82),
             hazard_dot: 22.0,
             hazard_flash: rgb(0.5, 0.7, 1.0),
+            // Ship timber + iron banding: a woody thock rising to a splintering snap.
+            voice: AcousticProfile::new(200.0, 10.0, 560.0),
         },
         Void => ThemeSpec {
             dir: "textures/world/void",
@@ -425,6 +511,8 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             clear: rgb(0.01, 0.0, 0.03),
             hazard_dot: 26.0,
             hazard_flash: rgb(0.7, 0.3, 1.0),
+            // Obsidian/crystal: a ringing glassy chime that climbs to a shattering peal.
+            voice: AcousticProfile::new(330.0, 7.0, 990.0),
         },
         Dam => ThemeSpec {
             dir: "textures/world/dam",
@@ -440,6 +528,8 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             clear: rgb(0.55, 0.63, 0.72),
             hazard_dot: 8.0,
             hazard_flash: rgb(0.5, 0.7, 0.95),
+            // Reinforced concrete: a deep dull boom grinding up to a slab crack.
+            voice: AcousticProfile::new(160.0, 8.0, 500.0),
         },
     }
 }
@@ -469,6 +559,7 @@ pub fn build_theme(m: &mut Assets<StandardMaterial>, assets: &AssetServer, id: T
         hazard_emissive: s.hazard_emissive,
         hazard_dot: s.hazard_dot,
         hazard_flash: s.hazard_flash,
+        voice: s.voice,
     }
 }
 
@@ -583,6 +674,9 @@ pub struct Build<'a, 'w, 's> {
     pub start: &'a mut PlayerStart,
     pub plan: &'a mut SpawnPlan,
     pub lava: &'a mut LavaVolumes,
+    /// Resonant brushes authored this build (feature 29), drained into the
+    /// `ResonantBrushes` resource once the build finishes and slots are stable.
+    pub resonant: &'a mut Vec<ResonantBrush>,
 }
 
 /// Wall descriptor for `room`: which wall and the gap interval (in world units
@@ -617,6 +711,39 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
     /// Decorative brush: visual only (no collision), e.g. a hazard surface.
     pub fn deco(&mut self, min: Vec3, max: Vec3, mat: Handle<StandardMaterial>) {
         self.visual(min, max, mat);
+    }
+
+    /// A decorative brush parented to `parent` (visual only). World coordinates as
+    /// usual; the transform is rebased to the parent's center so it sits where you
+    /// asked but inherits the parent's visibility — used to pin a telegraph deco
+    /// (e.g. a resonant brush's glowing fracture seam) so it hides when the parent
+    /// brush shatters. `parent_center` is the parent box's center (`(min+max)*0.5`).
+    ///
+    /// Deliberately NOT a `LevelEntity`: its lifetime is the parent's. The level
+    /// teardown despawns every `LevelEntity`, and a `despawn` recurses to children
+    /// — so tagging the child too would despawn it twice (once via the parent,
+    /// once via the query), tripping an "entity already despawned" warning.
+    pub fn deco_child(
+        &mut self,
+        parent: Entity,
+        parent_center: Vec3,
+        min: Vec3,
+        max: Vec3,
+        mat: Handle<StandardMaterial>,
+    ) {
+        let center = (min + max) * 0.5;
+        let mesh = self.meshes.add(box_mesh(min, max));
+        let child = self
+            .commands
+            .spawn((
+                Mesh3d(mesh),
+                MeshMaterial3d(mat),
+                // Child transform is relative to the parent; rebase so the box keeps
+                // its authored world position.
+                Transform::from_translation(center - parent_center),
+            ))
+            .id();
+        self.commands.entity(parent).add_child(child);
     }
 
     /// A thin decorative slab (visual only) spanning x/z at height `y`, useful
@@ -786,6 +913,55 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
             Door { solid_index, closed_pos: center, open_offset, opening: false, opened: false, t: 0.0 },
             LevelEntity,
         ));
+    }
+
+    /// A **resonant** brush filling [min,max] (feature 29): a solid, textured
+    /// brush like any other, but flagged as an instrument. Strike it and it rings
+    /// at the theme's voice; hold the Lightning beam on it and its hum sweeps up
+    /// to the shatter note, at which point it detonates into gibs — its collider
+    /// degenerates and its mesh vanishes, opening the route it was plugging. Use a
+    /// brush that fills a gap carved in the surrounding geometry so shattering it
+    /// leaves a real passage. Adopts the active theme's `voice`. Returns the brush
+    /// entity so callers can parent telegraph deco (e.g. a glowing fracture seam)
+    /// to it — hiding the brush on shatter then hides the deco with it.
+    pub fn resonant(&mut self, min: Vec3, max: Vec3, mat: Handle<StandardMaterial>) -> Entity {
+        let profile = self.theme.voice;
+        self.resonant_with(min, max, mat, profile)
+    }
+
+    /// A resonant brush with an explicit acoustic profile, for a one-off surface
+    /// whose note shouldn't be the theme default (a special sluice plate, etc.).
+    /// Returns the brush entity (see [`Build::resonant`]).
+    pub fn resonant_with(
+        &mut self,
+        min: Vec3,
+        max: Vec3,
+        mat: Handle<StandardMaterial>,
+        profile: AcousticProfile,
+    ) -> Entity {
+        // Spawn the visual exactly like `solid()` does, but keep the entity id so
+        // the resonance index can hide it when the brush shatters.
+        let center = (min + max) * 0.5;
+        let mesh = self.meshes.add(box_mesh(min, max));
+        let entity = self
+            .commands
+            .spawn((
+                Mesh3d(mesh),
+                MeshMaterial3d(mat),
+                Transform::from_translation(center),
+                LevelEntity,
+            ))
+            .id();
+        let slot = self.colliders.len();
+        self.colliders.push(Aabb::from_corners(min, max));
+        self.resonant.push(ResonantBrush {
+            slot,
+            entity,
+            profile,
+            charge: 0.0,
+            since_struck: f32::INFINITY,
+        });
+        entity
     }
 
     /// Register the level exit (reaching within ~3m wins/advances).

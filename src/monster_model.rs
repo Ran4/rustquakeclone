@@ -18,7 +18,10 @@ use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::{PI, TAU};
 
-use crate::common::{tune::GRAVITY, *};
+use crate::common::{
+    tune::{CORPSE_DESPAWN_AT, CORPSE_SINK_BEGINS, GRAVITY},
+    *,
+};
 use crate::effects::{spawn_blood, spawn_gibs};
 use crate::enemies::{kind_pitch, Enemy};
 use crate::level::MonsterKind;
@@ -812,7 +815,7 @@ fn animate_monsters(
     }
 }
 
-fn animate_death(
+pub(crate) fn animate_death(
     time: Res<Time>,
     mut commands: Commands,
     mut q: Query<(Entity, &mut Transform, &mut Dying)>,
@@ -824,10 +827,12 @@ fn animate_death(
         let smooth = k * k * (3.0 - 2.0 * k); // smoothstep
         let topple = smooth * (PI * 0.5) * 0.92;
         tf.rotation = Quat::from_rotation_y(d.yaw) * Quat::from_rotation_x(topple);
-        if d.t > 4.0 {
+        // Sink/despawn timeline coupled with `corpse::SINK_BEGINS` (= CORPSE_SINK_BEGINS):
+        // a corpse is solid cover until the sink starts, then ramps into the floor.
+        if d.t > CORPSE_SINK_BEGINS {
             tf.translation.y -= dt * 0.5; // sink into the floor before vanishing
         }
-        if d.t > 6.0 {
+        if d.t > CORPSE_DESPAWN_AT {
             commands.entity(e).despawn();
         }
     }

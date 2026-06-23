@@ -82,7 +82,11 @@ pub fn build(b: &mut Build) {
     // ========================================================================
     // GREAT HALL — ice pillars, the Silver Key dais
     // ========================================================================
-    b.room(-14.0, 14.0, -40.0, -18.0, 0.0, 9.0, &[Wall::S((-3.0, 3.0)), Wall::N((-3.0, 3.0))]);
+    // North wall has TWO gaps: the central locked door (x[-3,3]) and an east
+    // alcove (x[5,8]) plugged by a cracked-ice RESONANT panel (feature 29) — ring
+    // the Lightning beam up to its shatter note and it cracks open, a key-skipping
+    // shortcut straight into the tower (bypassing the locked door + the ambush).
+    b.room(-14.0, 14.0, -40.0, -18.0, 0.0, 9.0, &[Wall::S((-3.0, 3.0)), Wall::N((-3.0, 3.0)), Wall::N((5.0, 8.0))]);
     // rows of ice pillars
     for &x in &[-9.0_f32, 9.0] {
         for &z in &[-22.0_f32, -29.0, -36.0] {
@@ -113,9 +117,34 @@ pub fn build(b: &mut Build) {
     b.door(Vec3::new(-3.0, 0.0, -40.3), Vec3::new(3.0, 6.0, -39.7), Vec3::new(0.0, 6.2, 0.0));
 
     // ========================================================================
+    // RESONANT ICE PANEL — feature 29. A cracked-ice slab plugging the east gap
+    // (x[5,8]) carved in BOTH the great-hall north wall and the tower south wall,
+    // so shattering it leaves a real walk-through into the tower. It fills the gap
+    // full wall depth (z[-40.3,-39.7]) and a doorway's height (y[0,4.5]). Hold the
+    // Lightning beam on it and its hum sweeps up to the ice shatter note; it then
+    // detonates into gibs, its collider degenerates and the panel vanishes — a
+    // Cells-for-shortcut bet that skips the Silver Key, the door and the ambush.
+    let cracked_ice = b.mat(rgb(0.62, 0.80, 0.95), LinearRgba::rgb(0.10, 0.22, 0.40), 0.18, 0.0);
+    let panel_min = Vec3::new(5.0, 0.0, -40.3);
+    let panel_max = Vec3::new(8.0, 4.5, -39.7);
+    let panel = b.resonant(panel_min, panel_max, cracked_ice);
+    // A glowing fracture seam telegraphing the panel (visual hint). Parented to the
+    // panel so it vanishes with it when the wall shatters open (feature 29) rather
+    // than hovering in the now-empty gap.
+    b.deco_child(
+        panel,
+        (panel_min + panel_max) * 0.5,
+        Vec3::new(5.4, 0.4, -39.68),
+        Vec3::new(7.6, 4.1, -39.62),
+        crystal.clone(),
+    );
+
+    // ========================================================================
     // TOWER / KEEP — stairs up to the exit slipgate
     // ========================================================================
-    b.room(-9.0, 9.0, -58.0, -40.0, 0.0, 12.0, &[Wall::S((-3.0, 3.0))]);
+    // South wall mirrors the great hall: the door gap (x[-3,3]) plus the resonant
+    // panel gap (x[5,8]) so the shattered shortcut leads straight in here.
+    b.room(-9.0, 9.0, -58.0, -40.0, 0.0, 12.0, &[Wall::S((-3.0, 3.0)), Wall::S((5.0, 8.0))]);
     // stairs climbing north up to a raised exit ledge
     b.stairs(-3.0, 3.0, -44.0, 3.0, 0.0, 6, Vec3::Z * -1.0);
     b.solid(Vec3::new(-9.0, 2.5, -57.0), Vec3::new(9.0, 3.0, -48.0), trim.clone());

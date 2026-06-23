@@ -1,16 +1,20 @@
 ### Features to implement (highest up = highest priority)
 
-ALWAYS implement these one at a time.
+ALWAYS implement these one at a time. When implemented, move them to the "Features already implemented"
+section below.
 
-17
-29
-37
-39
 41
 45
 46
 47
 55 (decal limit configurable; default 2000)
+
+### Features already implemented
+
+17 (ragdoll brushes — corpses become moving cover)
+29 (resonant brushwork — sonic demolition / lightning sweep-to-shatter)
+37 (wall-run — sustained wall traversal)
+39 (whip parry — bat the bolt back)
 
 ## Later (needs extensive discussion first, do NOT attempt these unless EXPLICITLY told by user!)
 

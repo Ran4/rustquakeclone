@@ -2,15 +2,56 @@
 
 use bevy::prelude::*;
 
+use crate::common::tune::*;
 use crate::common::*;
-use crate::effects::spawn_particle;
+use crate::effects::{spawn_particle, spawn_sparks};
 use crate::monster_model::nearest_limb_hit;
 use crate::physics::{ray_aabb, raycast_world, Aabb};
 
 pub struct ProjectilePlugin;
 impl Plugin for ProjectilePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, projectile_move.run_if(in_state(GameState::Playing)));
+        app.init_resource::<WhipParry>().add_systems(
+            Update,
+            // The parry sweep runs BEFORE the integrator so a projectile flipped
+            // player-owned this frame is already friendly when `projectile_move`
+            // resolves its collision (and a popped one is gone before it can hit).
+            (whip_parry, projectile_move)
+                .chain()
+                .run_if(in_state(GameState::Playing)),
+        );
+    }
+}
+
+/// The Whip's active parry window, opened by a left-click Whip swing
+/// (`weapons::fire_weapon`) and consumed by `whip_parry`. While `window > 0` the
+/// Whip's melee arc is swept against enemy-owned projectiles each frame. The
+/// captured `origin`/`dir` are the camera's at swing time — the SAME geometry the
+/// melee lash uses — so the parry reuses the lash's reach, not a second hitbox.
+#[derive(Resource, Default)]
+pub struct WhipParry {
+    /// Seconds left in the active window (0 = closed).
+    pub window: f32,
+    /// Seconds left in the leading PERFECT sub-window (0 = past the perfect slice).
+    pub perfect: f32,
+    /// Swing ray origin (camera position at swing time).
+    pub origin: Vec3,
+    /// Swing aim direction (normalized).
+    pub dir: Vec3,
+    /// Whip melee reach (m) at swing time, used as the parry sweep length.
+    pub reach: f32,
+    /// The player entity that swung — the new owner of anything it bats back.
+    pub player: Option<Entity>,
+}
+impl WhipParry {
+    /// Open (or refresh) the window for a fresh Whip swing.
+    pub fn open(&mut self, origin: Vec3, dir: Vec3, reach: f32, player: Entity) {
+        self.window = crate::common::tune::PARRY_WINDOW;
+        self.perfect = crate::common::tune::PARRY_PERFECT_WINDOW;
+        self.origin = origin;
+        self.dir = dir;
+        self.reach = reach;
+        self.player = Some(player);
     }
 }
 
@@ -48,6 +89,14 @@ pub struct Projectile {
     /// but for its fuse emits an inward (imploding) pull instead of detonating on
     /// contact, then pops with a small real blast when the fuse runs out.
     pub lodestone: bool,
+    /// True once this projectile was batted back by a Whip parry (feature 39). It
+    /// now belongs to the player (`from_player = true`, `source = player`), but
+    /// this flag makes its immunity to its NEW owner AIRTIGHT: a returned grenade's
+    /// `ExplosionEvent` carries `returned = true`, and `combat::handle_explosions`
+    /// excludes the source (the player) from a returned blast entirely — so the
+    /// player can NEVER be hurt by the splash of a shot they batted back, no matter
+    /// the geometry.
+    pub returned: bool,
 }
 
 impl Projectile {
@@ -97,6 +146,7 @@ pub fn spawn_projectile(
             push,
             trail: 0.0,
             lodestone: false,
+            returned: false,
         },
         LevelEntity,
     ));
@@ -135,6 +185,7 @@ pub fn spawn_lodestone(commands: &mut Commands, gfx: &GfxAssets, pos: Vec3, dir:
                 push: 8.0,
                 trail: 0.0,
                 lodestone: true,
+                returned: false,
             },
             LevelEntity,
         ))
@@ -237,6 +288,7 @@ pub(crate) fn projectile_move(
                 push: LODESTONE_PULL_ACCEL * dt,
                 implode: true,
                 direct_limb: None,
+                returned: false,
             });
             if p.fuse <= 0.0 {
                 let pos = tf.translation;
@@ -250,6 +302,7 @@ pub(crate) fn projectile_move(
                     push: p.push,
                     implode: false,
                     direct_limb: None,
+                    returned: false,
                 });
                 sfx.write(Sfx::pitched(Sound::Explosion, pos, 0.8));
                 commands.entity(e).despawn();
@@ -362,6 +415,7 @@ pub(crate) fn projectile_move(
                         push: p.push,
                         implode: false,
                         direct_limb,
+                        returned: p.returned,
                     });
                     sfx.write(Sfx::at(Sound::Explosion, pos));
                     exploded = true;
@@ -398,7 +452,7 @@ pub(crate) fn projectile_move(
         // blast radius than a grenade that explodes on a direct hit.
         if !exploded && p.kind == ProjKind::Grenade && p.fuse <= 0.0 {
             let pos = tf.translation;
-            expl.write(ExplosionEvent { pos, radius: p.splash_radius * 1.5, damage: p.splash_damage, source: p.source, from_player: p.from_player, color: rgb(1.0, 0.6, 0.2), push: p.push, implode: false, direct_limb: None });
+            expl.write(ExplosionEvent { pos, radius: p.splash_radius * 1.5, damage: p.splash_damage, source: p.source, from_player: p.from_player, color: rgb(1.0, 0.6, 0.2), push: p.push, implode: false, direct_limb: None, returned: p.returned });
             sfx.write(Sfx::at(Sound::Explosion, pos));
             exploded = true;
         }
@@ -406,5 +460,218 @@ pub(crate) fn projectile_move(
         if exploded || p.life <= 0.0 {
             commands.entity(e).despawn();
         }
+    }
+}
+
+/// Pure reflect-and-aim for a parried projectile (feature 39). `vel` is the
+/// incoming (toward-player) velocity, `aim` the unit swing/aim direction (the
+/// caller has already verified `vel.dot(aim) < 0`, i.e. it's heading at the
+/// player). Reflects `vel` about the swing plane (normal = `aim`) using the same
+/// `v -= n*(v·n)*coeff` math the grenade wall-bounce uses (coeff = 2 → a clean
+/// mirror), so the shot screams back along the reflection of its own path. Then it
+/// is nudged toward the aim (which the player has pointed at the shooter): a LATE
+/// parry gets a small nudge (`PARRY_HOMING_LATE`) so it has a fighting chance to
+/// connect; a `perfect` parry both speeds it up and homes harder (`PARRY_HOMING`).
+/// Both homing amounts keep a positive aim-component (`out·aim > 0` after the
+/// mirror), so the result can never point back at the player.
+fn parry_reflect(vel: Vec3, aim: Vec3, perfect: bool) -> Vec3 {
+    let into = vel.dot(aim);
+    let mut out = vel - aim * into * 2.0; // mirror about the swing plane
+    let homing = if perfect { PARRY_HOMING } else { PARRY_HOMING_LATE };
+    if perfect {
+        out *= PARRY_PERFECT_SPEED;
+    }
+    let speed = out.length();
+    let homed = out.normalize_or_zero().lerp(aim, homing).normalize_or_zero();
+    if homed.length_squared() > 1e-6 {
+        out = homed * speed;
+    }
+    out
+}
+
+/// Whip parry (feature 39): while the parry window is open, sweep the Whip's
+/// melee arc against every ENEMY-owned projectile and bat the ones it catches.
+///
+/// A CLEAN parry (window open, projectile in the arc):
+///  - reflects the projectile's velocity about the swing plane (normal = aim) with
+///    the very same `v -= n*(v·n)*coeff` math the grenade bounce uses, so it screams
+///    back along the reflection of its own path (a PERFECT parry adds a speed bonus
+///    and a homing nudge toward the shooter);
+///  - FLIPS ownership enemy->player (`from_player = true`, `source = player`), so on
+///    its next collision it runs the normal PLAYER-damage path against MONSTERS and
+///    can NEVER harm the player (see the ownership note below).
+/// A LATE parry (still inside `PARRY_WINDOW` but past the perfect slice on a
+/// projectile that for any reason can't be cleanly returned — here we treat every
+/// in-arc catch as a deflect; the perfect/late split is the bonus, not pop-vs-return)
+/// — see the brief: a sloppy swing just POPS it. We pop (despawn) only the rare
+/// degenerate case where the incoming velocity isn't actually moving toward the
+/// player along the aim (nothing sensible to reflect), so the player still eats
+/// nothing and gets no free kill.
+///
+/// OWNERSHIP SAFETY (the #1 correctness requirement): a parried projectile is the
+/// SAME entity, but with `from_player` flipped to `true`, `source` set to the
+/// player, and `returned` set to `true`. Every damage decision keys off these
+/// fields and nothing else — and the player is immune by construction, NOT by
+/// geometry:
+///  - DIRECT hits in `projectile_move` skip any target whose faction fails
+///    `Projectile::hits_faction(f)`, which returns `!from_player` for the player —
+///    i.e. `false` once flipped, so the player is never a valid direct target;
+///  - SPLASH from a batted grenade writes `ExplosionEvent { from_player: true,
+///    source: Some(player), returned: true }`. `combat::handle_explosions` runs the
+///    player-faction path (which would normally clip the firer for half damage), but
+///    the `returned && self_blast` guard there skips the explosion's source — the
+///    player — entirely. So a returned grenade can hurt the monsters in its radius
+///    and NEVER the player who sent it back, no matter where it detonates.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn whip_parry(
+    mut commands: Commands,
+    time: Res<Time>,
+    gfx: Res<GfxAssets>,
+    mut parry: ResMut<WhipParry>,
+    mut q: Query<(Entity, &Transform, &mut Projectile)>,
+    mut sfx: MessageWriter<Sfx>,
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    // Decay the window. Bail (cheaply) when it's closed.
+    if parry.window <= 0.0 {
+        return;
+    }
+    let was_perfect = parry.perfect > 0.0;
+    parry.window -= dt;
+    parry.perfect = (parry.perfect - dt).max(0.0);
+    if parry.dir.length_squared() < 1e-6 {
+        if parry.window <= 0.0 {
+            parry.window = 0.0;
+        }
+        return;
+    }
+
+    let origin = parry.origin;
+    let aim = parry.dir.normalize_or_zero();
+    let reach = parry.reach + PARRY_REACH_PAD;
+    let r2 = PARRY_CATCH_RADIUS * PARRY_CATCH_RADIUS;
+    let player = parry.player;
+
+    for (e, tf, mut p) in &mut q {
+        // Only ENEMY-owned projectiles can be parried (never re-bat your own shots
+        // or an already-returned projectile).
+        if p.from_player {
+            continue;
+        }
+        // Project the projectile onto the swing ray. In-arc = within `reach` along
+        // the aim and within the catch radius perpendicular to it (a fat cylinder
+        // hugging the visible lash, not a second hand-tuned hitbox).
+        let to = tf.translation - origin;
+        let along = to.dot(aim);
+        if along < 0.0 || along > reach {
+            continue;
+        }
+        let perp = (to - aim * along).length_squared();
+        if perp > r2 {
+            continue;
+        }
+
+        // Reflect the incoming velocity about the swing plane (normal = aim), the
+        // same `v -= n*(v·n)*coeff` math the grenade wall-bounce uses, coeff = 2 for
+        // a clean mirror. `into < 0` means it's actually heading toward the player
+        // along the aim (the normal case for an incoming shot).
+        let into = p.vel.dot(aim);
+        if into >= 0.0 {
+            // Degenerate: not moving toward the player along the swing — nothing
+            // sensible to bat back. POP it harmlessly (no damage, no free kill).
+            // Neutralise it first (player-owned, stationary) so that even if the
+            // despawn command hasn't flushed before `projectile_move` runs this
+            // frame it can't harm the player. `chain()` inserts a sync point so the
+            // despawn normally lands before the integrator; this is belt-and-braces.
+            p.from_player = true;
+            p.source = player;
+            p.returned = true;
+            p.vel = Vec3::ZERO;
+            p.fuse = f32::INFINITY; // don't let a grenade fuse-detonate
+            spawn_sparks(&mut commands, &gfx, tf.translation, -aim);
+            sfx.write(Sfx::at(Sound::MetallicTing, tf.translation));
+            commands.entity(e).despawn();
+            continue;
+        }
+        p.vel = parry_reflect(p.vel, aim, was_perfect);
+
+        // FLIP OWNERSHIP enemy -> player. This is the entire safety mechanism:
+        // from here every damage decision treats the projectile as the player's.
+        // `returned` makes a batted grenade's splash skip the player airtight.
+        p.from_player = true;
+        p.source = player;
+        p.returned = true;
+
+        // Turn the tables: a returned shot at base enemy damage (a bolt is only 10)
+        // can't threaten the shooter, so scale it up — modest on a late parry, hard
+        // on a perfect one (the kill window). This is offence-only: the player is
+        // immune to a returned shot regardless of its damage (direct hits fail
+        // `hits_faction`, splash is skipped by the `returned && self_blast` guard).
+        let dmg_mult = if was_perfect { PARRY_PERFECT_DAMAGE } else { PARRY_RETURN_DAMAGE };
+        p.damage *= dmg_mult;
+        p.splash_damage *= dmg_mult;
+
+        // Feedback: a sharp metallic ting (pitched up on a perfect parry) + a spark.
+        let pitch = if was_perfect { 1.5 } else { 1.0 };
+        sfx.write(Sfx::pitched(Sound::MetallicTing, tf.translation, pitch));
+        spawn_sparks(&mut commands, &gfx, tf.translation, -aim);
+    }
+
+    if parry.window <= 0.0 {
+        parry.window = 0.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bolt flying straight at the player (opposite the aim) is mirrored back out
+    /// along the aim — it screams back toward the shooter, at the same speed on a
+    /// non-perfect parry.
+    #[test]
+    fn parry_mirrors_a_head_on_bolt_back_out() {
+        let aim = Vec3::Z; // player looking +Z, shooter ahead at +Z
+        let incoming = Vec3::new(0.0, 0.0, -20.0); // bolt heading -Z, at the player
+        let out = parry_reflect(incoming, aim, false);
+        // Returned along +Z (back at the shooter), magnitude preserved.
+        assert!(out.z > 0.0, "should be sent back out along +aim, got {out:?}");
+        assert!((out.length() - incoming.length()).abs() < 1e-3, "speed preserved on a late parry");
+        assert!(out.is_finite());
+    }
+
+    /// An off-axis bolt has its into-player component flipped to away-from-player
+    /// and is nudged toward the aim (the late-parry homing). Its tangential sign is
+    /// preserved (still a reflection, not a flip), but the magnitude is pulled in
+    /// toward the aim, and speed is preserved.
+    #[test]
+    fn parry_reflects_off_axis_like_a_wall() {
+        let aim = Vec3::Z;
+        let incoming = Vec3::new(4.0, 0.0, -10.0); // angling in toward the player
+        let out = parry_reflect(incoming, aim, false);
+        // Heads back out along +aim (away from the player), never back at them.
+        assert!(out.dot(aim) > 0.0, "into-component flipped outward, got {out:?}");
+        // Tangential component keeps its sign but is pulled in by the homing nudge.
+        assert!(out.x > 0.0 && out.x < 4.0, "tangential x reduced toward aim, got {}", out.x);
+        // Speed is preserved on a late parry (homing renormalizes, no speed bonus).
+        assert!((out.length() - incoming.length()).abs() < 1e-3, "speed preserved, got {}", out.length());
+    }
+
+    /// A PERFECT parry returns the shot faster than a late one and never NaNs.
+    #[test]
+    fn perfect_parry_is_faster_and_finite() {
+        let aim = Vec3::Z;
+        let incoming = Vec3::new(1.0, 0.0, -20.0);
+        let late = parry_reflect(incoming, aim, false);
+        let perfect = parry_reflect(incoming, aim, true);
+        assert!(perfect.length() > late.length() * 1.2, "perfect should add a speed bonus");
+        assert!(perfect.is_finite());
+        // Homing pulls the heading toward the aim (more +Z-aligned than the mirror).
+        let mirror_align = late.normalize().dot(aim);
+        let perfect_align = perfect.normalize().dot(aim);
+        assert!(perfect_align >= mirror_align - 1e-4, "homing should not steer away from the shooter");
     }
 }

@@ -368,6 +368,17 @@ fn sever() -> Vec<f32> {
     b.finish(0.9)
 }
 
+fn corpse_settle() -> Vec<f32> {
+    // A knocked corpse skids and flops to rest: a soft low meaty thud under a
+    // brief gritty scrape, no sharp transient (it's a settle, not a hit). Quiet —
+    // it fades in/out under combat rather than announcing itself.
+    let mut b = Buf::secs(0.22);
+    b.sine_sweep(120.0, 45.0, 0.5, 20.0); // dull body thud
+    b.noise(0.35, 16.0, 0.2, 0x4c07); // gritty floor scrape
+    b.attack(0.006);
+    b.finish(0.4)
+}
+
 fn lodestone() -> Vec<f32> {
     // An energy well powering up: a low rising sweep under a vibrato'd buzz with a
     // touch of noise — an ominous warbling charge/hum, distinct from the boom (~0.7s).
@@ -378,6 +389,120 @@ fn lodestone() -> Vec<f32> {
     b.noise(0.2, 3.0, 0.18, 0x10de); // faint energy fizz
     b.attack(0.02);
     b.finish(0.7)
+}
+
+fn resonant_hum() -> Vec<f32> {
+    // Feature 29: the loop a resonant brush sings while the Lightning beam dwells
+    // on it. The game scrubs playback SPEED to sweep the pitch up toward the
+    // shatter note, so this is rendered at a fixed reference tone (220 Hz) — a
+    // clean, near-pure sine with a touch of octave + fifth shimmer so it reads as
+    // a struck-material overtone, NOT a buzzy kazoo. Seamlessly loopable (~1.2s),
+    // no transient, no noise, a slow tremolo so a sustained dwell breathes.
+    let mut b = Buf::secs(1.2);
+    let n = b.s.len();
+    let f = 220.0;
+    for i in 0..n {
+        let t = i as f32 / SR as f32;
+        let body = (TAU * f * t).sin() * 0.7         // fundamental
+            + (TAU * f * 2.0 * t).sin() * 0.18       // octave
+            + (TAU * f * 3.0 * t).sin() * 0.06;      // a touch of the fifth-ish 3rd harmonic
+        let tremolo = 0.85 + 0.15 * (TAU * 5.5 * t).sin();
+        b.s[i] = body * tremolo;
+    }
+    b.finish(0.6)
+}
+
+fn resonant_ring() -> Vec<f32> {
+    // Feature 29: the brief percussive "tink" a resonant brush rings with when a
+    // pellet/nail/body grazes it — the same clean harmonic stack as `resonant_hum`
+    // (so it shares the brush's voice when pitch-scaled) but SHORT, with a hard
+    // attack and an exponential decay so it strikes and dies like a struck pane,
+    // NOT the sustained drone the held beam drives. Rendered at the same 220 Hz
+    // reference so the game can pitch it to each brush's fundamental.
+    let mut b = Buf::secs(0.25);
+    let n = b.s.len();
+    let f = 220.0;
+    for i in 0..n {
+        let t = i as f32 / SR as f32;
+        let body = (TAU * f * t).sin() * 0.7         // fundamental
+            + (TAU * f * 2.0 * t).sin() * 0.18       // octave
+            + (TAU * f * 3.0 * t).sin() * 0.06;      // a touch of the 3rd harmonic
+        let decay = (-13.0 * t).exp(); // tinks and dies
+        b.s[i] = body * decay;
+    }
+    b.attack(0.002);
+    b.finish(0.6)
+}
+
+fn resonant_shatter() -> Vec<f32> {
+    // Feature 29: a resonant brush hitting its breaking note and detonating — a
+    // bright cracking ring (a quick descending chime, the sweep "snapping") under
+    // a sharp shatter burst and a low collapse thud, so it lands as glass/stone
+    // breaking rather than just an explosion.
+    let mut b = Buf::secs(0.6);
+    b.sine_sweep(1400.0, 300.0, 0.6, 16.0); // the ring snapping down as it cracks
+    b.sine_sweep(900.0, 220.0, 0.35, 14.0); // overtone
+    b.noise(0.9, 22.0, 0.9, 0x5ea7); // sharp shatter burst
+    b.sine_sweep(150.0, 50.0, 0.5, 9.0); // low collapse thud
+    b.attack(0.001);
+    b.finish(0.9)
+}
+
+fn wallrun_scuff() -> Vec<f32> {
+    // Feature 37: the loop boots make dragging along a wall while wall-running.
+    // A gritty, low-mid filtered noise scrape — band-limited white noise with a
+    // slow rhythmic "stride" amplitude wobble (so it reads as repeated footfall
+    // scuffs, not a flat hiss) and a faint friction tone. NO transient and a
+    // seamless head/tail so the LOOP point is inaudible (~0.5s). The game fades
+    // its volume with wall-run speed and tears it down on peel-off.
+    let mut b = Buf::secs(0.5);
+    let n = b.s.len();
+    let mut rng = Rng::new(0x37a1);
+    let mut lp = 0.0f32; // one-pole lowpass -> rumble body
+    let mut hp_prev = 0.0f32; // simple highpass state -> grit
+    for i in 0..n {
+        let t = i as f32 / SR as f32;
+        let white = rng.next_f32();
+        lp += 0.18 * (white - lp); // ~low-mid band scrape body
+        // highpass = signal - lowpassed signal: keeps the gritty hiss on top.
+        let hp = lp - hp_prev;
+        hp_prev += 0.05 * (lp - hp_prev);
+        // Two overlapping stride wobbles (a slight phase mismatch) so the scuff
+        // has an organic loping cadence rather than a single pure tremolo.
+        let stride = 0.55
+            + 0.30 * (TAU * 7.0 * t).sin().abs()
+            + 0.15 * (TAU * 3.3 * t + 1.1).sin().abs();
+        let friction = (TAU * 95.0 * t).sin() * 0.05; // faint friction tone
+        b.s[i] = (lp * 0.7 + hp * 0.5 + friction) * stride;
+    }
+    b.finish(0.5)
+}
+
+fn metallic_ting() -> Vec<f32> {
+    // Feature 39: the sharp "ting" the Whip rings when it bats a projectile out of
+    // the air — a struck-steel ping. A bright inharmonic chime (a high fundamental
+    // with slightly-stretched, non-integer partials so it reads as struck METAL,
+    // not a tuned bell) with a hard attack and a fast exponential decay, plus a
+    // tiny noise tick for the contact. Short (~0.22s). A perfect parry pitches the
+    // whole clip up at playback time (Sfx pitch), so it's rendered at a mid tone.
+    let mut b = Buf::secs(0.22);
+    let n = b.s.len();
+    let f = 1500.0; // bright steel fundamental
+    // Stretched (inharmonic) partials => "clang", not "bell".
+    let partials = [(1.0f32, 0.7f32), (2.76, 0.35), (5.40, 0.18), (8.93, 0.08)];
+    for i in 0..n {
+        let t = i as f32 / SR as f32;
+        let mut s = 0.0f32;
+        for &(mult, amp) in &partials {
+            // higher partials die faster (metal's bright transient settling to a hum)
+            let decay = (-(18.0 + mult * 6.0) * t).exp();
+            s += (TAU * f * mult * t).sin() * amp * decay;
+        }
+        b.s[i] = s;
+    }
+    b.noise(0.5, 120.0, 0.95, 0x71a9); // crisp contact tick
+    b.attack(0.0008);
+    b.finish(0.75)
 }
 
 fn ambient() -> Vec<f32> {
@@ -430,6 +555,12 @@ fn table() -> Vec<(&'static str, fn() -> Vec<f32>)> {
         ("rope_taut.wav", rope_taut),
         ("sever.wav", sever),
         ("lodestone.wav", lodestone),
+        ("corpse_settle.wav", corpse_settle),
+        ("resonant_hum.wav", resonant_hum),
+        ("resonant_ring.wav", resonant_ring),
+        ("resonant_shatter.wav", resonant_shatter),
+        ("wallrun_scuff.wav", wallrun_scuff),
+        ("metallic_ting.wav", metallic_ting),
     ]
 }
 

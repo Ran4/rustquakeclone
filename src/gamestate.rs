@@ -16,7 +16,7 @@ impl Plugin for GameStatePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (objective, door_system, lava_damage, exit_system, animate_lava)
+            (objective, door_system, lava_damage, corpse_hazard, exit_system, animate_lava)
                 .run_if(in_state(GameState::Playing)),
         )
         .add_systems(Update, restart_system)
@@ -122,6 +122,32 @@ fn lava_damage(
         }
     } else {
         *acc = 0.0;
+    }
+}
+
+/// Dissolve a ragdoll-brush corpse (feature 17) dropped into lava/hazard or off
+/// the world: despawn it and let `reclaim_corpse_slots` reclaim its collider slot
+/// next frame. This is what makes "boot a body into the lava and it's gone" pay
+/// off — and stops a body skidding off a ledge from becoming a phantom collider
+/// floating in the void.
+fn corpse_hazard(
+    mut commands: Commands,
+    lava: Res<LavaVolumes>,
+    mut colliders: ResMut<WorldColliders>,
+    q_corpse: Query<(Entity, &Transform, &crate::corpse::CorpseBody)>,
+) {
+    for (e, tf, body) in &q_corpse {
+        let cbox = Aabb::from_center_half(tf.translation, body.half);
+        let in_lava = lava.volumes.iter().any(|v| v.overlaps(&cbox));
+        if in_lava || tf.translation.y < lava.kill_y {
+            // Retire the collider slot the same frame we despawn the body, so it
+            // doesn't linger as a one-frame phantom solid in the lava / over the
+            // void before `reclaim_corpse_slots` frees it next frame.
+            if let Some(s) = colliders.solids.get_mut(body.slot) {
+                *s = crate::corpse::degenerate();
+            }
+            commands.entity(e).despawn();
+        }
     }
 }
 

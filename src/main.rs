@@ -9,6 +9,7 @@ mod audio_gen;
 mod combat;
 mod common;
 mod config;
+mod corpse;
 mod effects;
 mod enemies;
 mod gallery;
@@ -24,6 +25,7 @@ mod physics;
 mod pickups;
 mod player;
 mod projectiles;
+mod resonance;
 mod vehicle;
 mod weapons;
 mod web;
@@ -117,11 +119,13 @@ fn main() {
         .add_message::<ExplosionEvent>()
         .add_message::<SeverEvent>()
         .add_message::<ImpactEvent>()
+        .add_message::<BrushStrike>()
         .add_message::<Sfx>()
         .add_message::<ScreenShake>()
         .add_message::<ScreenFlash>()
         .add_message::<Notify>()
-        // feature plugins
+        // feature plugins (nested into sub-tuples to stay under Bevy's
+        // 15-element `Plugins` tuple impl limit)
         .add_plugins((
             level::LevelPlugin,
             player::PlayerPlugin,
@@ -136,6 +140,10 @@ fn main() {
             vehicle::VehiclePlugin,
             mount::MountPlugin,
             web::WebPlugin,
+        ))
+        .add_plugins((
+            corpse::CorpsePlugin,
+            resonance::ResonancePlugin,
             audio::AudioPlugin,
         ));
 
@@ -160,6 +168,9 @@ fn main() {
             (
                 weapons::create_weapon_vis,
                 level::setup_level,
+                // Reserve the ragdoll-corpse collider pool right after the level's
+                // brushes are laid (so its slot indices come last and stay stable).
+                corpse::reserve_corpse_pool,
                 player::spawn_player,
                 player::grab_cursor,
                 weapons::setup_player_weapons,

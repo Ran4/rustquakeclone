@@ -40,6 +40,7 @@ if it's missing or malformed the defaults above apply.
 |-------------------|-----|
 | Move              | **W A S D** |
 | Jump              | **Space** (hold to bunny-hop; tap again in mid-air next to a wall to **wall-jump** off it) |
+| Wall-run          | Carry speed into a wall and **hold a move key into/along it** — sprint flat across it for a short stamina window, then peel off keeping your momentum |
 | Look / aim        | **Mouse** |
 | Fire              | **Left Mouse** (hold for automatic weapons) |
 | Select weapon     | **1–7** or **mouse wheel** |
@@ -88,8 +89,12 @@ door → reach the exit slipgate** — but the world around it changes completel
 4. **Grenade Launcher** — bouncing, timed grenades with splash; *right-click lobs a **Lodestone*** — a
    gravity-well grenade that **implodes**, dragging monsters (and loose projectiles) into a knot before it pops
 5. **Rocket Launcher** — direct + splash damage, *rocket-jump capable*
-6. **Lightning Gun** — continuous hitscan beam
-7. **Whip** — short-range melee, *uses no ammo*; flings whipped monsters back with heavy knockback
+6. **Lightning Gun** — continuous hitscan beam; *hold it on a **resonant** brush (cracked ice, a brass
+   bulkhead…) and its hum sweeps up to the surface's shatter note — the wall detonates and opens a shortcut*
+7. **Whip** — short-range melee, *uses no ammo*; flings whipped monsters back with heavy knockback. A
+   well-timed swing also **parries** — bat an incoming Enforcer bolt, Scrag spit or Ogre grenade out of
+   the air and back down its own throat (a perfect-window return screams back faster and homing, killing
+   the shooter with their own ammo; a late swat just pops it harmlessly)
 
 Ammo types: Shells, Nails, Rockets, Cells. The Whip needs none — it's the always-available
 melee fallback (and a handy way to shove a charging Knight off you). Armor (green/yellow) absorbs a
@@ -160,9 +165,13 @@ which are gitignored build artifacts) because they're not reproducible without t
 
 - **Movement physics**: friction + ground/air acceleration with the classic air-strafe speed cap,
   gravity, jumping, wall-jumping (kick off a wall in mid-air for an upward boost + push away),
-  step-up over stairs/ledges — all on a custom swept-AABB collision solver.
+  **wall-running** (carry speed into a wall and hold the move key to sprint flat along it for a short
+  stamina window, then peel off keeping every scrap of momentum), step-up over stairs/ledges — all on
+  a custom swept-AABB collision solver.
 - **Crunchy combat**: hitscan + projectiles, radius splash with falloff and knockback, blood, gibs,
   expanding fireballs, dynamic muzzle/explosion lights, screen shake, view bob, weapon kick, damage flash.
+  A clean kill leaves a **ragdoll-brush corpse** — for a few seconds the body is a real solid you can
+  shove with splash/Whip/a truck ram into a doorway, off a ledge, or into the lava.
 - **Atmosphere**: dark brush-built level, distance fog, HDR + bloom on emissive lava/lights, point lights.
 - **Procedural audio**: the core sound effects are synthesised at startup (no binary assets) into
   `assets/sounds/` and loaded by Bevy. The truck's engine, tyre screech and crash/ram hits are the
