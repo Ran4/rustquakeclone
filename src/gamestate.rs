@@ -134,16 +134,18 @@ fn corpse_hazard(
     mut commands: Commands,
     lava: Res<LavaVolumes>,
     mut colliders: ResMut<WorldColliders>,
-    q_corpse: Query<(Entity, &Transform, &crate::corpse::CorpseBody)>,
+    q_corpse: Query<(Entity, &crate::corpse::Ragdoll)>,
 ) {
-    for (e, tf, body) in &q_corpse {
-        let cbox = Aabb::from_center_half(tf.translation, body.half);
+    for (e, rag) in &q_corpse {
+        // Test the flopped body's tracking box, not the root transform (the root
+        // stays put at the death spot while the bones ragdoll away from it).
+        let cbox = rag.body_box;
         let in_lava = lava.volumes.iter().any(|v| v.overlaps(&cbox));
-        if in_lava || tf.translation.y < lava.kill_y {
-            // Retire the collider slot the same frame we despawn the body, so it
+        if in_lava || cbox.center().y < lava.kill_y {
+            // Retire the collision slot the same frame we despawn the body, so it
             // doesn't linger as a one-frame phantom solid in the lava / over the
-            // void before `reclaim_corpse_slots` frees it next frame.
-            if let Some(s) = colliders.solids.get_mut(body.slot) {
+            // void before `reclaim_ragdoll_slots` frees it next frame.
+            if let Some(s) = rag.slot().and_then(|i| colliders.solids.get_mut(i)) {
                 *s = crate::corpse::degenerate();
             }
             commands.entity(e).despawn();

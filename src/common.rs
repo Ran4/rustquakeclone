@@ -134,38 +134,59 @@ pub mod tune {
     /// (scraping a corner) with almost no speed — the anti solver-fight backstop.
     pub const GRAPPLE_STUCK_FRAMES: u32 = 12;
 
-    // --- Ragdoll-brush corpses (feature 17) ----------------------------------
-    /// How many corpses can be live moving colliders at once. A hard cap so a
-    /// massacre can't spawn dozens of swept boxes and tank the frame; pool slots
-    /// are reserved at level build time and recycled by a runtime free-list. When
-    /// the pool is full a fresh kill stays a *decorative* topple (no collider) —
-    /// the existing bodies keep their slots rather than the new one stealing one.
+    // --- Ragdoll corpses (feature 17) ----------------------------------------
+    // A cleanly-killed monster's SKELETON is driven by a Verlet/PBD ragdoll
+    // (`corpse.rs`): one particle per bone joint, bone lengths as distance
+    // constraints, light bend-stiffness so the trunk stays semi-rigid while limbs
+    // flop, and per-particle world collision so the body drapes over geometry. To
+    // OTHER actors the body is a single tracking AABB (reusing the slot pool).
+    /// How many corpses present a SOLID tracking box to other actors at once. A
+    /// hard cap so a massacre can't spawn dozens of swept boxes; pool slots are
+    /// reserved at level build time and recycled by a runtime free-list. Past the
+    /// cap a fresh kill still ragdolls (the visual + world-drape needs no slot) —
+    /// it just isn't solid to the player/monsters until a slot frees up.
     pub const CORPSE_CAP: usize = 6;
-    /// Restitution: fraction of into-surface speed a knocked corpse rebounds out
-    /// of a wall (a little bouncier than the truck so a rocketed body skips).
-    pub const CORPSE_REST: f32 = 0.35;
-    /// 1/s ground-drag that bleeds a corpse's horizontal skid to rest, so a body
-    /// settles into cover quickly instead of sliding forever (and so a resting
-    /// corpse can't keep nudging the player into geometry).
-    pub const CORPSE_GROUND_DRAG: f32 = 6.0;
-    /// 1/s air-drag on a tumbling corpse's horizontal velocity (much lighter, so
-    /// a flung body keeps its arc until it lands).
-    pub const CORPSE_AIR_DRAG: f32 = 0.6;
-    /// Speed (m/s) below which a *grounded* corpse is parked dead-still — kills
-    /// resting micro-jitter that would otherwise creep the body around.
-    pub const CORPSE_SLEEP_SPEED: f32 = 0.4;
-    /// Lift (m) given to a fresh corpse so its box settles on the swept solver's
-    /// SKIN gap rather than exactly on the floor boundary (the truck's gotcha:
-    /// a box centred on a floor face freezes the sweep).
-    pub const CORPSE_SPAWN_LIFT: f32 = 0.05;
-    /// Slip (m/s) at which the corpse's slide plays a faint settle/scrape cue.
+    /// Radius (m) of each ragdoll particle when collided against the world — the
+    /// half-extent handed to `physics::depenetrate` so a joint can't sink into a
+    /// floor/wall. Roughly a limb's thickness so the body rests on its surface.
+    pub const RAGDOLL_PARTICLE_RADIUS: f32 = 0.12;
+    /// PBD constraint-solve iterations per frame (distance + bend passes). More =
+    /// stiffer/less stretchy at linear cost; 8 keeps a ~30-bone rig taut.
+    pub const RAGDOLL_ITERS: usize = 8;
+    /// Per-frame Verlet velocity retention (1 = frictionless). Slightly <1 bleeds
+    /// solver energy so a settling body doesn't jitter forever.
+    pub const RAGDOLL_DAMPING: f32 = 0.98;
+    /// Bend (skip-one) constraint stiffness along the TRUNK chain
+    /// (pelvis→torso→chest→head): high, so the spine stays semi-rigid and the body
+    /// topples as a unit rather than folding into a puddle.
+    pub const RAGDOLL_BEND_TRUNK: f32 = 0.5;
+    /// Bend (skip-one) constraint stiffness across LIMB chains: low, so arms/legs
+    /// flop loosely.
+    pub const RAGDOLL_BEND_LIMB: f32 = 0.06;
+    /// Angular rate (rad/s) of the seeded topple impulse — how hard a fresh corpse
+    /// is thrown into a fall-OVER rotation about its base (vs. slumping straight
+    /// down). Scaled by the upper/lower bias below.
+    pub const RAGDOLL_TOPPLE_OMEGA: f32 = 3.0;
+    /// Topple-impulse weighting: upper-body particles get the full throw, lower
+    /// (feet/shins) barely move — the differential IS the angular momentum that
+    /// rotates the body over its planted feet.
+    pub const RAGDOLL_UPPER_BIAS: f32 = 1.0;
+    pub const RAGDOLL_LOWER_BIAS: f32 = 0.35;
+    /// Fraction of an incoming `Knockback` impulse injected into the ragdoll
+    /// (splash / Whip fling / truck ram still throw the body, now as a flop).
+    pub const RAGDOLL_KNOCK_SCALE: f32 = 1.0;
+    /// Speed (m/s) below which a grounded ragdoll is snapped to rest (`prev=pos`)
+    /// — kills resting micro-jitter that would otherwise creep the tracking box.
+    pub const RAGDOLL_SLEEP_SPEED: f32 = 0.4;
+    /// Clamp (m) on the tracking box's half-extents, so even a wide sprawl reads as
+    /// low cover and never approaches half a 4m corridor (can't pin the player).
+    pub const RAGDOLL_BODYBOX_MAX_HALF: f32 = 0.45;
+    /// Slip (m/s) at which a skidding ragdoll plays a faint settle/scrape cue.
     pub const CORPSE_SCRAPE_SPEED: f32 = 2.0;
-    /// `Dying.t` (s) at which a corpse stops being a SOLID collider and begins
-    /// sinking into the floor (collider slot released, `animate_death` owns the
-    /// descent). The topple finishes at t≈0.7, so this is how long a body is
-    /// usable cover — long enough to shove a body, reposition and exploit it.
-    /// MUST stay coupled with `CORPSE_DESPAWN_AT` (sink → vanish) and the matching
-    /// `t` thresholds in `monster_model::animate_death`.
+    /// `Dying.t` (s) at which a corpse stops being a SOLID collider and the ragdoll
+    /// freezes; `animate_death` then sinks the held pose into the floor. MUST stay
+    /// coupled with `CORPSE_DESPAWN_AT` (sink → vanish) and the matching `t`
+    /// thresholds in `monster_model::animate_death`.
     pub const CORPSE_SINK_BEGINS: f32 = 7.0;
     /// `Dying.t` (s) at which a sunk corpse despawns (frees the entity). Two
     /// seconds of sink ramp after `CORPSE_SINK_BEGINS`.

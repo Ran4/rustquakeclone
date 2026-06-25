@@ -11,7 +11,7 @@ section below.
 
 ### Features already implemented
 
-17 (ragdoll brushes — corpses become moving cover)
+17 (ragdoll physics — corpses flop and fall)
 29 (resonant brushwork — sonic demolition / lightning sweep-to-shatter)
 37 (wall-run — sustained wall traversal)
 39 (whip parry — bat the bolt back)

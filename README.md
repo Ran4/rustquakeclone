@@ -170,8 +170,9 @@ which are gitignored build artifacts) because they're not reproducible without t
   a custom swept-AABB collision solver.
 - **Crunchy combat**: hitscan + projectiles, radius splash with falloff and knockback, blood, gibs,
   expanding fireballs, dynamic muzzle/explosion lights, screen shake, view bob, weapon kick, damage flash.
-  A clean kill leaves a **ragdoll-brush corpse** — for a few seconds the body is a real solid you can
-  shove with splash/Whip/a truck ram into a doorway, off a ledge, or into the lava.
+  A clean kill drops a **physics ragdoll** — the monster's own skeleton goes limp and topples under
+  gravity, limbs flopping, draping over whatever it lands on. For a few seconds it's also solid: bump
+  it, stand on it, or fling it with splash/Whip/a truck ram off a ledge or into the lava.
 - **Atmosphere**: dark brush-built level, distance fog, HDR + bloom on emissive lava/lights, point lights.
 - **Procedural audio**: the core sound effects are synthesised at startup (no binary assets) into
   `assets/sounds/` and loaded by Bevy. The truck's engine, tyre screech and crash/ram hits are the

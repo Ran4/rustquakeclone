@@ -145,9 +145,9 @@ fn apply_damage(
             continue;
         };
         if hp.dead {
-            // A dead body still takes knockback (feature 17 ragdoll-brush corpses):
+            // A dead body still takes knockback (feature 17 ragdoll corpses):
             // a rocket splash / Whip fling / ram impulse must reach its `Knockback`
-            // so `corpse_physics` can skid it. We accumulate the impulse only —
+            // so `ragdoll_solve` can fling/tumble it. We accumulate the impulse only —
             // the damage/pain/sever arms below are for the living, so we stop here.
             if ev.knockback != Vec3::ZERO {
                 if let Some(mut k) = kb {

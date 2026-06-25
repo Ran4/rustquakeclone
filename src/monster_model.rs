@@ -719,15 +719,20 @@ pub fn build_monster_visual(
 // ----------------------------------------------------------------------------
 fn animate_monsters(
     time: Res<Time>,
-    q_owner: Query<(&Enemy, Option<&Dying>)>,
+    q_owner: Query<(&Enemy, Option<&Dying>, Has<crate::corpse::Ragdoll>)>,
     mut q_bone: Query<(&Bone, &mut Transform), Without<Severed>>,
 ) {
     let t = time.elapsed_secs();
     for (bone, mut tf) in &mut q_bone {
-        let Ok((en, dying)) = q_owner.get(bone.owner) else {
+        let Ok((en, dying, ragdolling)) = q_owner.get(bone.owner) else {
             continue;
         };
-        // While dying, limbs relax to their base pose; the root topples (below).
+        // A ragdolling corpse owns its bones in `corpse::ragdoll_solve` — leave them be.
+        if ragdolling {
+            continue;
+        }
+        // Dying but not yet ragdolled (the build trails the kill by a frame): relax to
+        // the base pose so the body stands still until the ragdoll takes over.
         if dying.is_some() {
             tf.rotation = bone.base_rot;
             continue;
@@ -823,12 +828,11 @@ pub(crate) fn animate_death(
     let dt = time.delta_secs();
     for (e, mut tf, mut d) in &mut q {
         d.t += dt;
-        let k = (d.t / 0.7).clamp(0.0, 1.0);
-        let smooth = k * k * (3.0 - 2.0 * k); // smoothstep
-        let topple = smooth * (PI * 0.5) * 0.92;
-        tf.rotation = Quat::from_rotation_y(d.yaw) * Quat::from_rotation_x(topple);
-        // Sink/despawn timeline coupled with `corpse::SINK_BEGINS` (= CORPSE_SINK_BEGINS):
-        // a corpse is solid cover until the sink starts, then ramps into the floor.
+        // The body no longer topples on a canned timer — `corpse::ragdoll_solve`
+        // physically flops the SKELETON while the root holds its death pose. We only
+        // own the sink/despawn tail here (coupled with `corpse::SINK_BEGINS`): once the
+        // ragdoll has frozen, lower the whole (un-rotated) root so the held pose sinks
+        // straight into the floor before it vanishes.
         if d.t > CORPSE_SINK_BEGINS {
             tf.translation.y -= dt * 0.5; // sink into the floor before vanishing
         }
