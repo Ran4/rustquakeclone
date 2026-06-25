@@ -157,12 +157,12 @@ pub mod tune {
     /// solver energy so a settling body doesn't jitter forever.
     pub const RAGDOLL_DAMPING: f32 = 0.98;
     /// Bend (skip-one) constraint stiffness along the TRUNK chain
-    /// (pelvis→torso→chest→head): high, so the spine stays semi-rigid and the body
-    /// topples as a unit rather than folding into a puddle.
-    pub const RAGDOLL_BEND_TRUNK: f32 = 0.5;
-    /// Bend (skip-one) constraint stiffness across LIMB chains: low, so arms/legs
-    /// flop loosely.
-    pub const RAGDOLL_BEND_LIMB: f32 = 0.06;
+    /// (pelvis→torso→chest→head): high, so the spine stays near-rigid and the body
+    /// tips OVER as a stiff unit (slow plank-fall) rather than crumpling into a puddle.
+    pub const RAGDOLL_BEND_TRUNK: f32 = 0.85;
+    /// Bend (skip-one) constraint stiffness across LIMB chains: modest, so arms/legs
+    /// still flop and trail but don't go instantly limp the frame the body dies.
+    pub const RAGDOLL_BEND_LIMB: f32 = 0.18;
     /// Angular rate (rad/s) of the seeded topple impulse — how hard a fresh corpse
     /// is thrown into a fall-OVER rotation about its base (vs. slumping straight
     /// down). Scaled by the upper/lower bias below.
