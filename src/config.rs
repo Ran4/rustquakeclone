@@ -18,11 +18,23 @@ pub struct Config {
     pub vsync: bool,
     /// Which level a fresh run begins on: `1`..`11` (default `1`), or `"random"`.
     pub start_level: StartLevel,
+    /// Hard cap on persistent carnage decals kept alive per level (feature 55):
+    /// blood pools, scorch rings and pellet pocks. Past this the oldest decal is
+    /// recycled, so a marathon fight stays O(cap) and can't tank the frame rate by
+    /// unbounded growth. `0` disables decals entirely. Default `2000`.
+    pub decal_limit: usize,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { fullscreen: true, width: 1280, height: 720, vsync: true, start_level: StartLevel::default() }
+        Self {
+            fullscreen: true,
+            width: 1280,
+            height: 720,
+            vsync: true,
+            start_level: StartLevel::default(),
+            decal_limit: 2000,
+        }
     }
 }
 

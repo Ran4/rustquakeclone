@@ -816,6 +816,27 @@ impl Default for RunState {
 #[derive(Resource, Clone, Copy, Default)]
 pub struct StartLevelConfig(pub Option<usize>);
 
+/// Per-theme decal colours for the carnage ledger (feature 55): the tint of blood
+/// pools/splats, rocket scorch rings and pellet pocks. Derived from the active
+/// theme so gore reads rust-red on Frostspire's blue ice but green ichor in the
+/// Verdant Rot. Each colour bakes in its own alpha — decals are alpha-blended
+/// quads, so a translucent stain layers over the brush texture instead of hiding it.
+#[derive(Clone, Copy)]
+pub struct DecalPalette {
+    pub blood: Color,
+    pub scorch: Color,
+    pub pock: Color,
+}
+impl Default for DecalPalette {
+    fn default() -> Self {
+        Self {
+            blood: Color::srgba(0.34, 0.02, 0.02, 0.85),
+            scorch: Color::srgba(0.03, 0.03, 0.035, 0.82),
+            pock: Color::srgba(0.04, 0.04, 0.05, 0.7),
+        }
+    }
+}
+
 /// Per-level visual/hazard styling consumed by systems outside `level.rs`
 /// (player fog, lava/hazard pulse + damage). Set by `setup_level`.
 #[derive(Resource)]
@@ -829,6 +850,10 @@ pub struct LevelStyle {
     pub hazard_dot: f32,
     /// Screen-tint color while burning/freezing/etc. in the hazard.
     pub hazard_flash: Color,
+    /// The active theme's carnage decal palette (feature 55) — copied here from
+    /// the resolved `Theme` so `decals::setup_decals` can tint its shared
+    /// blood/scorch/pock materials without reaching back into `level.rs`.
+    pub decal: DecalPalette,
 }
 impl Default for LevelStyle {
     fn default() -> Self {
@@ -839,6 +864,7 @@ impl Default for LevelStyle {
             hazard_emissive: LinearRgba::rgb(5.0, 1.2, 0.1),
             hazard_dot: 12.0,
             hazard_flash: rgb(0.9, 0.35, 0.05),
+            decal: DecalPalette::default(),
         }
     }
 }

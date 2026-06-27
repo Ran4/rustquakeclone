@@ -338,6 +338,9 @@ fn ragdoll_solve(
     mut q_tf: Query<&mut Transform, With<Bone>>,
     q_player: Query<(&GlobalTransform, &Hurtbox), With<crate::player::Player>>,
     mut sfx: MessageWriter<Sfx>,
+    // Carnage decals (feature 55, source (d)): a scraping corpse drags a blood smear.
+    mut commands: Commands,
+    mut decals: ResMut<crate::decals::Decals>,
 ) {
     let dt = time.delta_secs().min(1.0 / 30.0);
     if dt <= 0.0 {
@@ -423,10 +426,9 @@ fn ragdoll_solve(
             max_step = max_step.max(step.length());
         }
         let max_speed = max_step / dt;
-        let skid = {
-            let mv = sum_step / n / dt;
-            Vec3::new(mv.x, 0.0, mv.z).length()
-        };
+        let mv = sum_step / n / dt;
+        let skid_dir = Vec3::new(mv.x, 0.0, mv.z);
+        let skid = skid_dir.length();
         if resting && skid > CORPSE_SCRAPE_SPEED {
             rag.scrape_cd -= dt;
             if rag.scrape_cd <= 0.0 {
@@ -434,6 +436,11 @@ fn ragdoll_solve(
                 let vol = ((skid - CORPSE_SCRAPE_SPEED) / 8.0).clamp(0.15, 0.6);
                 let at = rag.body_box.center();
                 sfx.write(Sfx { sound: Sound::CorpseSettle, pos: Some(at), volume: vol, pitch: 1.0 });
+                // Streak a blood smear flush on the floor under the body, elongated
+                // along the slide — the ugly drag-mark a ram leaves (shares the scrape
+                // cadence, so a long skid lays a trail rather than a per-frame stutter).
+                let floor = Vec3::new(at.x, rag.body_box.min.y, at.z);
+                decals.smear(&mut commands, floor, skid_dir);
             }
         } else {
             rag.scrape_cd = 0.0;

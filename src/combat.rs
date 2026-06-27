@@ -250,6 +250,7 @@ fn apply_damage(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_deaths(
     mut commands: Commands,
     mut q: Query<(Entity, &mut Health, &Faction, &GlobalTransform, &Transform)>,
@@ -258,6 +259,10 @@ fn check_deaths(
     mut next: ResMut<NextState<GameState>>,
     mut mission: ResMut<Mission>,
     gfx: Res<GfxAssets>,
+    // Carnage decals (feature 55): a monster death stains the floor (and the wall
+    // behind it) for the life of the level.
+    mut decals: ResMut<crate::decals::Decals>,
+    colliders: Res<WorldColliders>,
 ) {
     for (e, mut hp, faction, gt, tf) in &mut q {
         if hp.current > 0.0 || hp.dead {
@@ -273,6 +278,10 @@ fn check_deaths(
             Faction::Monster => {
                 sfx.write(Sfx::at(Sound::EnemyDeath, pos));
                 mission.kills += 1;
+                // Stain the world where it fell (floor pool + optional wall splat),
+                // before the pinned/overkill forks below — a staked or gibbed death
+                // bleeds just the same.
+                decals.death_stain(&mut commands, &colliders.solids, pos);
                 // Pinned death (feature 41): a monster killed while staked to a wall
                 // stays there as grisly décor — it does NOT run the topple/ragdoll.
                 // `PinnedCorpse` freezes the rig and drops it from the live AI; we

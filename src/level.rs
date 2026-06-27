@@ -143,6 +143,7 @@ pub fn apply_theme_and_build(
     style.hazard_emissive = theme.hazard_emissive;
     style.hazard_dot = theme.hazard_dot;
     style.hazard_flash = theme.hazard_flash;
+    style.decal = theme.decal; // carnage decal tints (feature 55)
     clear.0 = theme.clear_color;
     ambient.color = theme.ambient_color;
     ambient.brightness = theme.ambient_brightness;
@@ -375,6 +376,10 @@ pub struct Theme {
     /// oozes tar, the foundry rings underfoot. NOT auto-applied — a level opts in,
     /// so untagged levels stay `Normal`.
     pub floor_material: FloorMaterial,
+    /// The theme's carnage decal palette (feature 55): blood/scorch/pock tints the
+    /// persistent world stains adopt, so gore reads rust-red on the ice fortress
+    /// but green ichor in the bio-hive.
+    pub decal: DecalPalette,
 }
 
 /// Loader setting that makes a texture wrap (tile) instead of clamping — brush
@@ -616,6 +621,20 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
     }
 }
 
+/// The carnage decal palette for a theme (feature 55). Blood reads rust-red on
+/// most worlds but green ichor in the living/organic dimensions (the Verdant Rot's
+/// hive, the crystal growth); scorch is a near-black sear everywhere; pocks are a
+/// grimy dark chip. Alpha is baked in (decals are alpha-blended over the brush).
+fn decal_palette(id: ThemeId) -> DecalPalette {
+    use ThemeId::*;
+    let blood = match id {
+        Hive => Color::srgba(0.10, 0.34, 0.05, 0.85),    // green ichor
+        Crystal => Color::srgba(0.12, 0.32, 0.24, 0.85), // teal-green sap
+        _ => Color::srgba(0.34, 0.02, 0.02, 0.85),       // rust-red gore
+    };
+    DecalPalette { blood, scorch: Color::srgba(0.03, 0.03, 0.035, 0.82), pock: Color::srgba(0.04, 0.04, 0.05, 0.7) }
+}
+
 pub fn build_theme(m: &mut Assets<StandardMaterial>, assets: &AssetServer, id: ThemeId) -> Theme {
     let s = theme_spec(id);
     let p = |name: &str| format!("{}/{}.png", s.dir, name);
@@ -643,6 +662,7 @@ pub fn build_theme(m: &mut Assets<StandardMaterial>, assets: &AssetServer, id: T
         hazard_flash: s.hazard_flash,
         voice: s.voice,
         floor_material: s.floor_material,
+        decal: decal_palette(id),
     }
 }
 

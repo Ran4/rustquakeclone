@@ -3,10 +3,11 @@
 ALWAYS implement these one at a time. When implemented, move them to the "Features already implemented"
 section below.
 
-55 (decal limit configurable; default 2000)
+(none currently queued)
 
 ### Features already implemented
 
+55 (carnage stains — persistent pooled blood/scorch/pellet-pock/drag-smear decals, themed, configurable cap default 2000)
 47 (material floors — per-brush ice/tar/conveyor that rewrites grounded movement, themed per level; bunny-hop/air-strafe untouched)
 46 (bed gun — pintle cannon as a second mountable seat on the flatbed truck)
 45 (mine cart — rideable rail spline; campaign expanded 8→11 with three new mine levels: Blackvein Deep, The Brine Gallery, Shatterglass Vein)

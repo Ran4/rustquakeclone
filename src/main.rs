@@ -10,6 +10,7 @@ mod combat;
 mod common;
 mod config;
 mod corpse;
+mod decals;
 mod effects;
 mod enemies;
 mod gallery;
@@ -115,6 +116,8 @@ fn main() {
         .init_resource::<LevelIntro>()
         .init_resource::<Sounds>()
         .init_resource::<LimbBoxes>()
+        // carnage decal pool (feature 55): the cap comes from config.ron `decal_limit`
+        .insert_resource(decals::Decals::new(cfg.decal_limit))
         // messages
         .add_message::<DamageEvent>()
         .add_message::<ExplosionEvent>()
@@ -148,6 +151,7 @@ fn main() {
             corpse::CorpsePlugin,
             resonance::ResonancePlugin,
             audio::AudioPlugin,
+            decals::DecalsPlugin,
         ));
 
     // World setup runs at startup and on every restart into Playing. The optional
@@ -171,6 +175,10 @@ fn main() {
             (
                 weapons::create_weapon_vis,
                 level::setup_level,
+                // Dress the carnage-decal pool for the new level (rebuild the shared
+                // quad mesh + retint blood/scorch/pock to the theme) once the level's
+                // theme styling is set. Must follow `setup_level`.
+                decals::setup_decals,
                 // Reserve the ragdoll-corpse collider pool right after the level's
                 // brushes are laid (so its slot indices come last and stay stable).
                 corpse::reserve_corpse_pool,
