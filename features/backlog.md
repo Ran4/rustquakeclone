@@ -3,13 +3,13 @@
 ALWAYS implement these one at a time. When implemented, move them to the "Features already implemented"
 section below.
 
-45
 46
 47
 55 (decal limit configurable; default 2000)
 
 ### Features already implemented
 
+45 (mine cart — rideable rail spline; campaign expanded 8→11 with three new mine levels: Blackvein Deep, The Brine Gallery, Shatterglass Vein)
 41 (nail pin — stake living/dead monsters to surfaces, cook them in hazards)
 17 (ragdoll physics — corpses flop and fall)
 29 (resonant brushwork — sonic demolition / lightning sweep-to-shatter)
