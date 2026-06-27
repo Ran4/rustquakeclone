@@ -423,6 +423,44 @@ pub fn ground_check(pos: Vec3, half: Vec3, solids: &[Aabb]) -> bool {
     hit && moved.y > -probe + 1e-4
 }
 
+/// Like [`ground_check`] but hands back WHICH `solids` slot the AABB is resting on
+/// (feature 47: the floor-material lookup needs the brush, not just a bool).
+/// Probes straight down a short distance and returns the slot whose floor face the
+/// feet sit on; at a seam where two brushes meet under one foot, the brush with the
+/// **highest top face** wins — a deterministic, stable pick. `None` when nothing
+/// solid is directly below (airborne, or only side-walls within reach).
+pub fn ground_brush(pos: Vec3, half: Vec3, solids: &[Aabb]) -> Option<usize> {
+    let probe = 0.14;
+    let disp = Vec3::new(0.0, -probe, 0.0);
+    let mut best: Option<(usize, f32)> = None; // (slot, top_y)
+    for (i, b) in solids.iter().enumerate() {
+        let eb = b.expand(half);
+        if let Some((_, n)) = segment_aabb(pos, disp, &eb) {
+            // Only count an upward (floor) face — a side-wall the probe grazes is
+            // not what we're standing on.
+            if n.y > 0.7 {
+                let top = b.max.y;
+                if best.map_or(true, |(_, by)| top > by) {
+                    best = Some((i, top));
+                }
+            }
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// Slide an AABB by a positional `delta`, clipping against solids — the conveyor
+/// belt's per-frame carry (feature 47). Mirrors `vehicle_carry`'s rider delta but
+/// runs through the same velocity-threading slide so the belt can't shove a rider
+/// through a wall. Returns the new centre position.
+pub fn carry_translate(pos: Vec3, half: Vec3, delta: Vec3, solids: &[Aabb]) -> Vec3 {
+    if delta.length_squared() < 1e-12 {
+        return pos;
+    }
+    let (np, _, _) = slide(pos, half, delta, solids);
+    np
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

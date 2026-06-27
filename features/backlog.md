@@ -3,11 +3,11 @@
 ALWAYS implement these one at a time. When implemented, move them to the "Features already implemented"
 section below.
 
-47
 55 (decal limit configurable; default 2000)
 
 ### Features already implemented
 
+47 (material floors — per-brush ice/tar/conveyor that rewrites grounded movement, themed per level; bunny-hop/air-strafe untouched)
 46 (bed gun — pintle cannon as a second mountable seat on the flatbed truck)
 45 (mine cart — rideable rail spline; campaign expanded 8→11 with three new mine levels: Blackvein Deep, The Brine Gallery, Shatterglass Vein)
 41 (nail pin — stake living/dead monsters to surfaces, cook them in hazards)

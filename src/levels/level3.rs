@@ -20,7 +20,7 @@
 //!        └───────────────────────────────┘   z=10
 
 use bevy::prelude::*;
-use crate::common::rgb;
+use crate::common::{rgb, FloorMaterial};
 use crate::level::Build;
 use crate::level::ItemKind;
 use crate::level::MonsterKind::*;
@@ -147,8 +147,16 @@ pub fn build(b: &mut Build) {
     // West landing (low catwalk anchor) at y=3.
     b.solid(Vec3::new(-13.5, 2.5, -22.0), Vec3::new(-7.0, 3.0, -19.0), brass.clone());
 
-    // LOW CATWALK: a narrow bridge across the channel at y=3, z≈-20.
-    b.solid(Vec3::new(-7.0, 2.8, -21.0), Vec3::new(7.0, 3.0, -19.0), metal.clone());
+    // LOW CATWALK: a narrow bridge across the channel at y=3, z≈-20 — a running
+    // conveyor belt (feature 47). Stand still and the foundry belt carries you
+    // east across the molten channel; fight it to hold position, or let it sling
+    // you to the far landing. A moving tightrope over the lava.
+    b.solid_mat(
+        Vec3::new(-7.0, 2.8, -21.0),
+        Vec3::new(7.0, 3.0, -19.0),
+        metal.clone(),
+        FloorMaterial::conveyor(Vec2::new(1.0, 0.0), 5.0),
+    );
     // East landing of the low catwalk.
     b.solid(Vec3::new(7.0, 2.5, -22.0), Vec3::new(13.5, 3.0, -19.0), brass.clone());
 

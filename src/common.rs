@@ -669,11 +669,103 @@ impl Sounds {
 }
 
 // ----------------------------------------------------------------------------
+// Floor materials (feature 47): the surface underfoot rewrites how the GROUND
+// branch of movement behaves. Each brush carries one, stored parallel to the
+// collider list (see `WorldColliders.materials`). A material only ever SCALES the
+// grounded friction + ground accel/cap (and adds a conveyor push); the airborne
+// path never reads it, so the bunny-hop and air-strafe feel is untouched.
+// ----------------------------------------------------------------------------
+/// The movement personality of a floor brush. `Normal` is today's exact values
+/// (all multipliers 1.0, no push), so an untagged brush behaves identically to
+/// before this feature — existing levels are unchanged unless they opt in.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum FloorMaterial {
+    /// Standard footing — the global default (multipliers 1.0, no push).
+    #[default]
+    Normal,
+    /// Near-frictionless: you carry speed and overshoot, and your grounded
+    /// control is sluggish (low accel/cap) so you can't snap-stop or turn — the
+    /// classic ice room, now a campaign-wide rule.
+    Ice,
+    /// Mud / tar: heavy drag (high friction) and bled acceleration, so a sprint
+    /// becomes a wade and you can't dodge — a glue-trap kill-box.
+    Tar,
+    /// Conveyor grate / slick belt: standard friction + accel, plus a constant
+    /// push that slides whoever stands on it along `dir` at `speed` (m/s).
+    Conveyor { dir: Vec2, speed: f32 },
+    /// Ringing steel plate: reserved for the foundry/dam palette. Movement-identical
+    /// to `Normal` today — it carries no friction/accel/push difference. The intended
+    /// distinction is a footstep-timbre variant, which is NOT wired yet (there is no
+    /// footstep system), so right now this behaves exactly like `Normal`.
+    Metal,
+}
+impl FloorMaterial {
+    /// A conveyor pushing along the horizontal `dir` (x,z) at `speed` m/s.
+    pub fn conveyor(dir: Vec2, speed: f32) -> Self {
+        FloorMaterial::Conveyor { dir, speed }
+    }
+
+    /// Multiplier on the grounded friction term. <1 = slippery (ice), >1 = draggy
+    /// (tar). Exactly 1.0 for `Normal`/`Metal`/`Conveyor`, so they bleed speed
+    /// identically to the original constant.
+    pub fn friction_mul(self) -> f32 {
+        match self {
+            FloorMaterial::Ice => 0.04,
+            FloorMaterial::Tar => 2.4,
+            _ => 1.0,
+        }
+    }
+
+    /// Multiplier on the grounded accel AND wish-speed cap. <1 = mushy control
+    /// (ice slides past, tar wades). Exactly 1.0 for `Normal`/`Metal`/`Conveyor`.
+    pub fn accel_mul(self) -> f32 {
+        match self {
+            FloorMaterial::Ice => 0.35,
+            FloorMaterial::Tar => 0.5,
+            _ => 1.0,
+        }
+    }
+
+    /// The constant per-second push this floor adds to a grounded rider (zero for
+    /// everything but a conveyor). Horizontal; fed through the swept solver so it
+    /// respects walls — the same idea as `vehicle_carry`'s rider delta.
+    pub fn push(self) -> Vec3 {
+        match self {
+            FloorMaterial::Conveyor { dir, speed } => {
+                let d = dir.normalize_or_zero();
+                Vec3::new(d.x, 0.0, d.y) * speed
+            }
+            _ => Vec3::ZERO,
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
 // World collision geometry (static level brushes). Doors are handled separately.
 // ----------------------------------------------------------------------------
 #[derive(Resource, Default)]
 pub struct WorldColliders {
     pub solids: Vec<Aabb>,
+    /// Floor material per solid, kept rigorously index-aligned with `solids`
+    /// (feature 47). Build-time brushes push one here for every collider; the
+    /// reserved door/vehicle/rail/corpse slots are `Normal`. The lookup is
+    /// bounds-safe — any index past the end (e.g. a corpse-pool slot appended
+    /// after the build) reads back as `Normal`.
+    pub materials: Vec<FloorMaterial>,
+    /// `true` iff the active level has at least one non-`Normal` floor material
+    /// (feature 47). Computed once at build time. The per-frame movement code (the
+    /// player AND every grounded enemy) skips the downward `ground_brush` material
+    /// probe entirely when this is `false` — i.e. on the seven floors-are-just-floors
+    /// levels (including the level-8 dam stress test) the feature costs nothing.
+    pub has_floor_material: bool,
+}
+impl WorldColliders {
+    /// Floor material of solid slot `i` (feature 47). Bounds-safe: an out-of-range
+    /// index reads back as `Normal`, so a length mismatch can never panic — it just
+    /// falls back to standard footing.
+    pub fn material(&self, i: usize) -> FloorMaterial {
+        self.materials.get(i).copied().unwrap_or_default()
+    }
 }
 
 // ----------------------------------------------------------------------------

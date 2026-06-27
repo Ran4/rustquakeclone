@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use crate::common::rgb;
+use crate::common::{rgb, FloorMaterial};
 use crate::level::Build;
 use crate::level::ItemKind;
 use crate::level::MonsterKind::*;
@@ -63,11 +63,16 @@ pub fn build(b: &mut Build) {
     b.room(-13.0, 13.0, -18.0, 2.0, 0.0, 8.0, &[Wall::S((-2.0, 2.0)), Wall::N((-3.0, 3.0))]);
     // the cracked frozen lake itself (chilling hazard) — sits low in the room
     b.hazard(-11.0, 11.0, -16.0, 0.0, 0.05);
-    // raised ice-block stepping stones marching north across the lake
+    // raised ice-block stepping stones marching north across the lake. These are
+    // genuinely slippery now (feature 47): tag them Ice so a hard charge skates
+    // you past the next block — brake early or ride the slide on purpose. This is
+    // the level-2 one-off ice promoted to a real movement material.
+    b.floor_mat(FloorMaterial::Ice);
     b.solid(Vec3::new(-2.0, 0.0, -2.0), Vec3::new(2.0, 0.6, 1.5), ice.clone());
     b.solid(Vec3::new(-2.5, 0.0, -6.5), Vec3::new(1.5, 0.7, -3.5), ice.clone());
     b.solid(Vec3::new(-1.5, 0.0, -10.5), Vec3::new(2.5, 0.8, -7.5), ice.clone());
     b.solid(Vec3::new(-2.0, 0.0, -15.5), Vec3::new(2.0, 0.6, -11.5), ice.clone());
+    b.floor_mat(FloorMaterial::Normal);
     // glowing ice crystals lighting the lake edges
     b.deco(Vec3::new(-12.5, 1.0, -8.0), Vec3::new(-11.5, 3.5, -6.0), crystal.clone());
     b.deco(Vec3::new(11.5, 1.0, -8.0), Vec3::new(12.5, 3.5, -6.0), crystal.clone());
@@ -86,7 +91,11 @@ pub fn build(b: &mut Build) {
     // alcove (x[5,8]) plugged by a cracked-ice RESONANT panel (feature 29) — ring
     // the Lightning beam up to its shatter note and it cracks open, a key-skipping
     // shortcut straight into the tower (bypassing the locked door + the ambush).
+    // The hall floor is a sheet of ice (feature 47) — fighting the Knight + ambush
+    // here means negotiating the slick, where momentum overshoots your turns.
+    b.floor_mat(FloorMaterial::Ice);
     b.room(-14.0, 14.0, -40.0, -18.0, 0.0, 9.0, &[Wall::S((-3.0, 3.0)), Wall::N((-3.0, 3.0)), Wall::N((5.0, 8.0))]);
+    b.floor_mat(FloorMaterial::Normal);
     // rows of ice pillars
     for &x in &[-9.0_f32, 9.0] {
         for &z in &[-22.0_f32, -29.0, -36.0] {

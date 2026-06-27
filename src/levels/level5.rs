@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use crate::common::rgb;
+use crate::common::{rgb, FloorMaterial};
 use crate::level::Build;
 use crate::level::ItemKind;
 use crate::level::MonsterKind::*;
@@ -103,12 +103,17 @@ pub fn build(b: &mut Build) {
     // recess the floor as a sludge canal: dig a pit by raising side decks instead.
     // bubbling toxic sludge pool across the middle of the hall
     b.hazard(-28.0, 4.0, -52.0, -44.0, 0.2);
-    // fleshy catwalks (solid) crossing the acid — must be walked to reach the door
+    // fleshy catwalks (solid) crossing the acid — must be walked to reach the door.
+    // The living membrane oozes sticky tar (feature 47): crossing is a wade, so the
+    // Scrag swarm overhead is a real kill-box — you can't dodge, you have to clear
+    // them before you commit to the slog across.
+    b.floor_mat(FloorMaterial::Tar);
     b.solid(Vec3::new(-30.0, 0.0, -49.5), Vec3::new(-18.0, 0.5, -46.5), flesh.clone());
     b.solid(Vec3::new(-18.0, 0.0, -49.5), Vec3::new(-6.0, 0.5, -46.5), trim.clone());
     b.solid(Vec3::new(-6.0, 0.0, -49.0), Vec3::new(6.0, 0.5, -45.5), flesh.clone());
     // a stepping platform bridging to the north door lane
     b.solid(Vec3::new(-3.0, 0.0, -49.0), Vec3::new(3.0, 0.5, -42.0), trim.clone());
+    b.floor_mat(FloorMaterial::Normal);
     // glowing egg-sac clusters bulging from the hall walls
     egg_sac(b, egg.clone(), Vec3::new(-26.0, 1.0, -53.0));
     egg_sac(b, egg.clone(), Vec3::new(2.0, 1.2, -53.0));

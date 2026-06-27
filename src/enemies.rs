@@ -6,7 +6,7 @@ use crate::common::{tune::EYE_OFFSET, *};
 use crate::effects::Lifetime;
 use crate::level::{MonsterKind, SpawnPlan};
 use crate::monster_model::{build_monster_visual, cripple_speed, Crippled, Dying, MonsterMats, MonsterTextures};
-use crate::physics::{line_of_sight, move_and_slide, ray_aabb, raycast_world, Aabb};
+use crate::physics::{carry_translate, ground_brush, line_of_sight, move_and_slide, ray_aabb, raycast_world, Aabb};
 use crate::player::{Player, PlayerHistory};
 use crate::projectiles::{spawn_projectile, ProjKind};
 
@@ -835,17 +835,43 @@ fn enemy_ai(
             en.vel = res.vel;
         } else {
             // ground: accelerate horizontally toward wish, apply gravity.
+            // Floor material (feature 47): the AI moves on the same probe as the
+            // player, so it inherits the same slip/drag — a Knight lured onto tar
+            // wades, on ice it overshoots. We scale ONLY accel_mul (the lerp rate
+            // toward `wish` AND the speed it converges on); accel_mul is clamped at
+            // 0.35 (ice) / 0.5 (tar), never 0, so a sticky floor can slow the AI to a
+            // wade but can never bleed it to a standstill and freeze it. friction_mul
+            // is deliberately NOT applied: the enemy has no separate friction term
+            // (the lerp toward a smaller wish is its only deceleration), and tar's
+            // >1 friction would perversely make it stop FASTER, the opposite of drag.
+            let half = en.half;
+            let fmat = if colliders.has_floor_material {
+                ground_brush(pos, half, &colliders.solids)
+                    .map(|i| colliders.material(i))
+                    .unwrap_or_default()
+            } else {
+                FloorMaterial::Normal
+            };
+            let m = fmat.accel_mul();
             let cur_h = Vec3::new(en.vel.x, 0.0, en.vel.z);
-            let new_h = cur_h.lerp(wish, (dt * 8.0).min(1.0));
+            let new_h = cur_h.lerp(wish * m, (dt * 8.0 * m).min(1.0));
             en.vel.x = new_h.x;
             en.vel.z = new_h.z;
             en.vel.y -= tune::GRAVITY * dt;
-            let half = en.half;
             let res = move_and_slide(pos, half, en.vel, dt, &colliders.solids, tune::STEP_HEIGHT);
             tf.translation = res.pos;
             en.vel = res.vel;
             if res.on_ground && en.vel.y < 0.0 {
                 en.vel.y = 0.0;
+            }
+            // Conveyor floors carry monsters too — a belt over a lava channel slides
+            // them along just like the player (the same `vehicle_carry` delta, routed
+            // through the swept slide so a wall still stops them).
+            if res.on_ground {
+                let belt = fmat.push();
+                if belt != Vec3::ZERO {
+                    tf.translation = carry_translate(tf.translation, half, belt * dt, &colliders.solids);
+                }
             }
         }
 

@@ -12,7 +12,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::common::{tune::*, *};
 use crate::level::{apply_fog, PlayerStart};
-use crate::physics::{depenetrate, move_and_slide, nearby_wall_normal};
+use crate::physics::{carry_translate, depenetrate, ground_brush, move_and_slide, nearby_wall_normal};
 
 const SENS: f32 = 0.0022;
 
@@ -312,6 +312,20 @@ pub(crate) fn player_move(
     let on_ground = p.on_ground;
     let half = Vec3::from_array(PLAYER_HALF);
 
+    // --- floor material (feature 47) ----------------------------------------
+    // Sample the brush directly under the feet and read its movement personality.
+    // This is the ONLY material input to movement, and it's consulted strictly on
+    // the ground branch (friction + ground accel/cap + a conveyor push). When
+    // airborne we hold `Normal`, so the bunny-hop / air-strafe path below never
+    // sees a material term — its coefficients stay byte-for-byte as they were.
+    let floor_mat = if on_ground && colliders.has_floor_material {
+        ground_brush(tf.translation, half, &colliders.solids)
+            .map(|i| colliders.material(i))
+            .unwrap_or_default()
+    } else {
+        FloorMaterial::Normal
+    };
+
     // A taut grapple keeps the player on "air" physics even when a low swing arc
     // grazes the floor: otherwise on_ground flips true at the bottom of the arc,
     // skipping the gravity that drives the pendulum and frictioning away the
@@ -327,7 +341,9 @@ pub(crate) fn player_move(
 
     if on_ground {
         if !grappling_taut {
-            vel = friction(vel, dt);
+            // Material scales ONLY the grounded friction (ice barely bleeds, tar
+            // drags hard); `Normal` passes 1.0 — identical to the old constant.
+            vel = friction(vel, dt, floor_mat.friction_mul());
         }
         if !driving && keys.pressed(KeyCode::Space) {
             vel.y = JUMP_SPEED;
@@ -484,12 +500,10 @@ pub(crate) fn player_move(
         // Normal locomotion: accelerate toward wishdir (ground vs air-cap gives
         // strafe-jumping feel). Run also scales AIR_ACCEL — snappier air control
         // toward the same AIR_CAP ceiling, so the air-strafe skill curve is
-        // preserved, just quicker.
-        let (accel, wishspeed) = if p.on_ground && !grappling_taut {
-            (GROUND_ACCEL * run_mul, MAX_GROUND_SPEED * run_mul)
-        } else {
-            (AIR_ACCEL * run_mul, AIR_CAP)
-        };
+        // preserved, just quicker. The floor material scales ONLY the grounded
+        // branch (see `locomotion_params`); the air branch never reads it.
+        let grounded = p.on_ground && !grappling_taut;
+        let (accel, wishspeed) = locomotion_params(grounded, run_mul, floor_mat);
         vel = accelerate(vel, wishdir, wishspeed, accel, dt);
 
         if !p.on_ground || grappling_taut {
@@ -541,6 +555,20 @@ pub(crate) fn player_move(
     tf.translation = res.pos;
     p.vel = res.vel;
 
+    // Conveyor belt (feature 47): a grounded floor that pushes adds a constant
+    // per-frame slide ON TOP of the player's own motion — exactly the way the
+    // truck deck carries a rider (`vehicle_carry`), but routed through the swept
+    // slide so a wall still stops the belt. It's a positional delta, not a
+    // velocity, so stepping off the belt drops the push instantly (you only ride
+    // it while you stand on it) and `p.vel` stays the player's own velocity.
+    // Gated on `!grappling_taut` like the rest of the grounded branch (friction +
+    // locomotion above): a taut swing whose arc grazes the belt keeps pure air/
+    // pendulum physics, so the floor only carries you while you actually stand on it.
+    let belt = floor_mat.push();
+    if on_ground && !grappling_taut && belt != Vec3::ZERO {
+        tf.translation = carry_translate(tf.translation, half, belt * dt, &colliders.solids);
+    }
+
     // Stuck watchdog: only count frames toward a detach when we're genuinely
     // pinned — a real wall contact THIS frame, the rope taut, and nearly stopped.
     // A free-air dangle or a gentle swing hits none of those (no wall), so it can
@@ -568,16 +596,34 @@ pub(crate) fn player_move(
     }
 }
 
-fn friction(vel: Vec3, dt: f32) -> Vec3 {
+/// Quake ground friction, scaled by a floor-material multiplier (feature 47).
+/// `fric_mul == 1.0` is the original constant exactly — ice passes a value near 0
+/// (carry speed), tar passes >1 (drag to a stop). Pure, so it's unit-tested.
+fn friction(vel: Vec3, dt: f32, fric_mul: f32) -> Vec3 {
     let horiz = Vec3::new(vel.x, 0.0, vel.z);
     let speed = horiz.length();
     if speed < 1e-4 {
         return vel;
     }
     let control = speed.max(STOP_SPEED);
-    let drop = control * FRICTION * dt;
+    let drop = control * FRICTION * fric_mul * dt;
     let newspeed = (speed - drop).max(0.0) / speed;
     Vec3::new(vel.x * newspeed, vel.y, vel.z * newspeed)
+}
+
+/// Pick the `(accel, wishspeed)` the locomotion `accelerate()` call uses, scaling
+/// ONLY the grounded branch by the floor material (feature 47). THE #1 invariant:
+/// the airborne branch is byte-for-byte independent of `mat` — it returns exactly
+/// `(AIR_ACCEL * run_mul, AIR_CAP)` for every material, so the classic air-strafe
+/// speed-gain and the hold-space bunny-hop are preserved. Pure, so it's the thing
+/// the air-path unit test pins down.
+fn locomotion_params(grounded: bool, run_mul: f32, mat: FloorMaterial) -> (f32, f32) {
+    if grounded {
+        let m = mat.accel_mul();
+        (GROUND_ACCEL * run_mul * m, MAX_GROUND_SPEED * run_mul * m)
+    } else {
+        (AIR_ACCEL * run_mul, AIR_CAP)
+    }
 }
 
 fn accelerate(vel: Vec3, wishdir: Vec3, wishspeed: f32, accel: f32, dt: f32) -> Vec3 {
@@ -663,5 +709,98 @@ fn wallrun_audio(
 fn cleanup_wallrun_audio(mut commands: Commands, q: Query<Entity, With<WallrunScuffSound>>) {
     for e in &q {
         commands.entity(e).despawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DT: f32 = 1.0 / 60.0;
+
+    /// THE #1 correctness requirement: a floor material must NOT touch the airborne
+    /// movement coefficients, so the bunny-hop / air-strafe feel is byte-for-byte
+    /// unchanged. The air branch returns exactly `(AIR_ACCEL*run_mul, AIR_CAP)` for
+    /// every material — including the exotic ones.
+    #[test]
+    fn air_path_is_identical_across_materials() {
+        let mats = [
+            FloorMaterial::Normal,
+            FloorMaterial::Ice,
+            FloorMaterial::Tar,
+            FloorMaterial::Metal,
+            FloorMaterial::conveyor(Vec2::new(1.0, 0.0), 8.0),
+        ];
+        for &run_mul in &[1.0_f32, RUN_MULTIPLIER] {
+            let baseline = (AIR_ACCEL * run_mul, AIR_CAP);
+            for m in mats {
+                // Airborne: every material yields the exact untouched air pair.
+                assert_eq!(
+                    locomotion_params(false, run_mul, m),
+                    baseline,
+                    "material {m:?} perturbed the air path (run_mul={run_mul})"
+                );
+            }
+        }
+    }
+
+    /// `Normal` is today's exact ground values — untagged brushes are unchanged.
+    #[test]
+    fn normal_ground_params_match_the_old_constants() {
+        assert_eq!(
+            locomotion_params(true, 1.0, FloorMaterial::Normal),
+            (GROUND_ACCEL, MAX_GROUND_SPEED)
+        );
+        assert_eq!(
+            locomotion_params(true, RUN_MULTIPLIER, FloorMaterial::Normal),
+            (GROUND_ACCEL * RUN_MULTIPLIER, MAX_GROUND_SPEED * RUN_MULTIPLIER)
+        );
+    }
+
+    /// Ice gives mushy grounded control (lower accel + cap) than `Normal`; tar
+    /// likewise wades. The ground branch IS scaled, unlike the air branch.
+    #[test]
+    fn ground_params_are_scaled_by_material() {
+        let (na, nw) = locomotion_params(true, 1.0, FloorMaterial::Normal);
+        let (ia, iw) = locomotion_params(true, 1.0, FloorMaterial::Ice);
+        assert!(ia < na && iw < nw, "ice should soften grounded control");
+        let (ta, tw) = locomotion_params(true, 1.0, FloorMaterial::Tar);
+        assert!(ta < na && tw < nw, "tar should soften grounded acceleration");
+    }
+
+    /// Ice slides further: over one tick, near-frictionless ground bleeds far less
+    /// speed than `Normal`, while tar bleeds more (the drag).
+    #[test]
+    fn ice_slides_further_than_normal_and_tar_drags() {
+        let v = Vec3::new(8.0, 0.0, 0.0);
+        let normal = friction(v, DT, FloorMaterial::Normal.friction_mul()).length();
+        let ice = friction(v, DT, FloorMaterial::Ice.friction_mul()).length();
+        let tar = friction(v, DT, FloorMaterial::Tar.friction_mul()).length();
+        assert!(ice > normal, "ice ({ice}) should retain more speed than normal ({normal})");
+        assert!(tar < normal, "tar ({tar}) should bleed more speed than normal ({normal})");
+    }
+
+    /// `friction` with multiplier 1.0 must equal the original constant-only math,
+    /// proving `Normal` is a no-op rewrite.
+    #[test]
+    fn friction_mul_one_is_the_original() {
+        let v = Vec3::new(5.0, 2.0, -3.0);
+        let scaled = friction(v, DT, 1.0);
+        // Reproduce the pre-feature formula inline.
+        let speed = Vec3::new(v.x, 0.0, v.z).length();
+        let drop = speed.max(STOP_SPEED) * FRICTION * DT;
+        let ns = (speed - drop).max(0.0) / speed;
+        let expected = Vec3::new(v.x * ns, v.y, v.z * ns);
+        assert!((scaled - expected).length() < 1e-6);
+    }
+
+    /// A conveyor's push is a horizontal vector along its (normalised) direction at
+    /// its speed; non-conveyor floors push nothing.
+    #[test]
+    fn conveyor_push_is_directional_others_are_zero() {
+        let belt = FloorMaterial::conveyor(Vec2::new(0.0, 2.0), 6.0).push();
+        assert!((belt - Vec3::new(0.0, 0.0, 6.0)).length() < 1e-5);
+        assert_eq!(FloorMaterial::Normal.push(), Vec3::ZERO);
+        assert_eq!(FloorMaterial::Ice.push(), Vec3::ZERO);
     }
 }

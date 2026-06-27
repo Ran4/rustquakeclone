@@ -148,6 +148,7 @@ pub fn apply_theme_and_build(
     ambient.brightness = theme.ambient_brightness;
 
     colliders.solids.clear();
+    colliders.materials.clear();
     plan.monsters.clear();
     plan.items.clear();
     plan.ambush.clear();
@@ -162,6 +163,8 @@ pub fn apply_theme_and_build(
         materials,
         assets,
         colliders: &mut colliders.solids,
+        floor_mats: &mut colliders.materials,
+        cur_mat: FloorMaterial::Normal,
         theme: &theme,
         start,
         plan,
@@ -169,6 +172,14 @@ pub fn apply_theme_and_build(
         resonant: &mut resonant.brushes,
     };
     crate::levels::build_index(idx, &mut b);
+    // Safety net: every build-time path keeps the two Vecs aligned, but pad here
+    // too so a stray direct push (a level reaching into `b.colliders`) can never
+    // leave the floor-material list short of the collider list.
+    b.sync_floor_mats();
+
+    // Per-level fast-path flag (feature 47): does any brush carry a special floor?
+    // If not, the per-frame movement code skips the material probe altogether.
+    colliders.has_floor_material = colliders.materials.iter().any(|m| *m != FloorMaterial::Normal);
 
     let mut min = Vec3::splat(1.0e9);
     let mut max = Vec3::splat(-1.0e9);
@@ -359,6 +370,11 @@ pub struct Theme {
     /// The theme's signature surface voice — the ring/shatter note a resonant
     /// brush in this level sounds (feature 29).
     pub voice: AcousticProfile,
+    /// The theme's signature floor material (feature 47): the palette default a
+    /// level can lean into (`b.theme_floor()`) so frost halls go icy, the hive
+    /// oozes tar, the foundry rings underfoot. NOT auto-applied — a level opts in,
+    /// so untagged levels stay `Normal`.
+    pub floor_material: FloorMaterial,
 }
 
 /// Loader setting that makes a texture wrap (tile) instead of clamping — brush
@@ -411,6 +427,8 @@ struct ThemeSpec {
     /// The theme's signature resonant voice (feature 29): the note its surfaces
     /// ring at and the pitch a resonant brush shatters at.
     voice: AcousticProfile,
+    /// The theme's signature floor material (feature 47), opt-in via `b.theme_floor()`.
+    floor_material: FloorMaterial,
 }
 
 fn theme_spec(id: ThemeId) -> ThemeSpec {
@@ -429,6 +447,7 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_flash: rgb(0.9, 0.35, 0.05),
             // Dark stone: a low, dull thud that grinds up to a dusty crack.
             voice: AcousticProfile::new(180.0, 9.0, 520.0),
+            floor_material: FloorMaterial::Normal,
         },
         Frost => ThemeSpec {
             dir: "textures/world/frost",
@@ -443,6 +462,7 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_flash: rgb(0.5, 0.7, 1.0),
             // Ice: a bright glassy tink that whines up to a high crystalline shriek.
             voice: AcousticProfile::new(440.0, 16.0, 1320.0),
+            floor_material: FloorMaterial::Ice,
         },
         Brass => ThemeSpec {
             dir: "textures/world/brass",
@@ -460,6 +480,7 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_flash: rgb(1.0, 0.5, 0.15),
             // Brass plate: a fat metallic bong that rings a long time up to a clang.
             voice: AcousticProfile::new(260.0, 5.0, 700.0),
+            floor_material: FloorMaterial::Metal,
         },
         Tomb => ThemeSpec {
             dir: "textures/world/tomb",
@@ -474,6 +495,7 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_flash: rgb(0.85, 0.7, 0.3),
             // Sandstone: a hollow muffled thunk that crumbles up to a dry crack.
             voice: AcousticProfile::new(150.0, 11.0, 480.0),
+            floor_material: FloorMaterial::Normal,
         },
         Hive => ThemeSpec {
             dir: "textures/world/hive",
@@ -488,6 +510,7 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_flash: rgb(0.4, 0.95, 0.3),
             // Chitin/membrane: a wet rubbery hum that swells up to a bursting pop.
             voice: AcousticProfile::new(220.0, 8.0, 600.0),
+            floor_material: FloorMaterial::Tar,
         },
         Pirate => ThemeSpec {
             dir: "textures/world/pirate",
@@ -502,6 +525,7 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_flash: rgb(0.5, 0.7, 1.0),
             // Ship timber + iron banding: a woody thock rising to a splintering snap.
             voice: AcousticProfile::new(200.0, 10.0, 560.0),
+            floor_material: FloorMaterial::Normal,
         },
         Void => ThemeSpec {
             dir: "textures/world/void",
@@ -516,6 +540,7 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_flash: rgb(0.7, 0.3, 1.0),
             // Obsidian/crystal: a ringing glassy chime that climbs to a shattering peal.
             voice: AcousticProfile::new(330.0, 7.0, 990.0),
+            floor_material: FloorMaterial::Ice,
         },
         Dam => ThemeSpec {
             dir: "textures/world/dam",
@@ -533,6 +558,7 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_flash: rgb(0.5, 0.7, 0.95),
             // Reinforced concrete: a deep dull boom grinding up to a slab crack.
             voice: AcousticProfile::new(160.0, 8.0, 500.0),
+            floor_material: FloorMaterial::Metal,
         },
         // Blackvein Deep: a deep mine, reusing the tomb's stone set under a dark
         // warm-grey grime and the orange glow of ore-veins/lanterns in the dark.
@@ -549,6 +575,7 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_flash: rgb(0.9, 0.4, 0.1),
             // Rock: a low gritty thud grinding up to a dusty crack.
             voice: AcousticProfile::new(170.0, 9.0, 500.0),
+            floor_material: FloorMaterial::Normal,
         },
         // The Brine Gallery: a flooded sea-cavern, reusing the frost set under a
         // pale grey-blue cast with damp haze and dark seawater hazards.
@@ -565,6 +592,7 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_flash: rgb(0.3, 0.5, 0.9),
             // Wet stone: a damp slap that rings up to a hollow knock.
             voice: AcousticProfile::new(420.0, 15.0, 1260.0),
+            floor_material: FloorMaterial::Normal,
         },
         // Shatterglass Vein: a radiant crystal mine, reusing the void set but cast
         // in bright teal-cyan (not Void's purple, which it sits right beside) so the
@@ -583,6 +611,7 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_flash: rgb(0.4, 1.0, 0.9),
             // Crystal: a bright glassy chime climbing to a shattering peal.
             voice: AcousticProfile::new(340.0, 7.0, 1020.0),
+            floor_material: FloorMaterial::Ice,
         },
     }
 }
@@ -613,6 +642,7 @@ pub fn build_theme(m: &mut Assets<StandardMaterial>, assets: &AssetServer, id: T
         hazard_dot: s.hazard_dot,
         hazard_flash: s.hazard_flash,
         voice: s.voice,
+        floor_material: s.floor_material,
     }
 }
 
@@ -723,6 +753,16 @@ pub struct Build<'a, 'w, 's> {
     pub materials: &'a mut Assets<StandardMaterial>,
     pub assets: &'a AssetServer,
     pub colliders: &'a mut Vec<Aabb>,
+    /// Floor material per collider (feature 47), kept index-aligned with
+    /// `colliders` — every brush helper pushes one here in lockstep via
+    /// [`Build::push_solid`], and the reserved door/vehicle/rail slots push
+    /// `Normal`. Drained into `WorldColliders.materials` (the same Vec, by &mut).
+    pub floor_mats: &'a mut Vec<FloorMaterial>,
+    /// The material stamped on every solid brush laid until it's changed
+    /// (feature 47). Defaults to `Normal` (so untagged levels are unchanged); a
+    /// level leans a region icy/sticky/belt by setting it around the relevant
+    /// `room`/`floor`/`solid` calls — see [`Build::floor_mat`].
+    pub cur_mat: FloorMaterial,
     pub theme: &'a Theme,
     pub start: &'a mut PlayerStart,
     pub plan: &'a mut SpawnPlan,
@@ -755,10 +795,56 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
         ));
     }
 
-    /// Solid brush: visual + collider.
+    // -- collider / floor-material bookkeeping (feature 47) -----------------
+    /// Push a collider AND its floor material in lockstep, so `colliders` and
+    /// `floor_mats` never drift (a mismatch = wrong friction under the player's
+    /// feet). Every brush helper that adds a collider goes through here. Returns
+    /// the slot index, for callers that track it (doors, resonant brushes).
+    fn push_solid(&mut self, aabb: Aabb, mat: FloorMaterial) -> usize {
+        let slot = self.colliders.len();
+        self.colliders.push(aabb);
+        self.floor_mats.push(mat);
+        slot
+    }
+
+    /// Pad `floor_mats` with `Normal` up to `colliders.len()` — call after any
+    /// helper that appends colliders OUTSIDE [`Build::push_solid`] (the vehicle,
+    /// rail-cart and silk-strand spawners take the raw `Vec<Aabb>`), so the two
+    /// lists stay aligned. Idempotent; a no-op once they match.
+    pub fn sync_floor_mats(&mut self) {
+        while self.floor_mats.len() < self.colliders.len() {
+            self.floor_mats.push(FloorMaterial::Normal);
+        }
+    }
+
+    /// Set the floor material stamped on every solid brush laid from now on
+    /// (feature 47): `b.floor_mat(FloorMaterial::Ice)` then lay an ice patch, then
+    /// `b.floor_mat(FloorMaterial::Normal)` to go back to standard footing. Lets a
+    /// level lean a whole region icy/sticky/belt without tagging each brush.
+    pub fn floor_mat(&mut self, mat: FloorMaterial) {
+        self.cur_mat = mat;
+    }
+
+    /// The active theme's signature floor material (feature 47) — its palette
+    /// default (frost → ice, hive → tar, …). A level opts a region into the theme
+    /// feel with `let m = b.theme_floor(); b.floor_mat(m);`. Not applied
+    /// automatically, so existing levels stay `Normal` unless they ask.
+    pub fn theme_floor(&self) -> FloorMaterial {
+        self.theme.floor_material
+    }
+
+    /// Solid brush: visual + collider, tagged with the current floor material.
     pub fn solid(&mut self, min: Vec3, max: Vec3, mat: Handle<StandardMaterial>) {
         self.visual(min, max, mat);
-        self.colliders.push(Aabb::from_corners(min, max));
+        self.push_solid(Aabb::from_corners(min, max), self.cur_mat);
+    }
+
+    /// Solid brush with an explicit floor material, regardless of `cur_mat`
+    /// (feature 47) — a one-off ice block or conveyor plate without flipping the
+    /// current-material state around it.
+    pub fn solid_mat(&mut self, min: Vec3, max: Vec3, mat: Handle<StandardMaterial>, floor: FloorMaterial) {
+        self.visual(min, max, mat);
+        self.push_solid(Aabb::from_corners(min, max), floor);
     }
 
     /// Decorative brush: visual only (no collision), e.g. a hazard surface.
@@ -955,8 +1041,8 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
     pub fn door(&mut self, min: Vec3, max: Vec3, open_offset: Vec3) {
         let aabb = Aabb::from_corners(min, max);
         let center = aabb.center();
-        let solid_index = self.colliders.len();
-        self.colliders.push(aabb);
+        // A door is a moving brush, never a floor you stand on — tag it `Normal`.
+        let solid_index = self.push_solid(aabb, FloorMaterial::Normal);
         let mesh = self.meshes.add(box_mesh(min, max));
         let door_mat = self.theme.door.clone();
         self.commands.spawn((
@@ -1005,8 +1091,8 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
                 LevelEntity,
             ))
             .id();
-        let slot = self.colliders.len();
-        self.colliders.push(Aabb::from_corners(min, max));
+        // A resonant brush is a wall plug that shatters, not a floor — `Normal`.
+        let slot = self.push_solid(Aabb::from_corners(min, max), FloorMaterial::Normal);
         self.resonant.push(ResonantBrush {
             slot,
             entity,
@@ -1028,6 +1114,7 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
         crate::vehicle::spawn_truck(
             &mut *self.commands, &mut *self.meshes, &mut *self.materials, &mut *self.colliders, pos, yaw,
         );
+        self.sync_floor_mats(); // the truck reserved a raw collider slot — tag it Normal
     }
 
     /// A rideable **mine cart** bolted to a fixed rail spline (feature 45). `track`
@@ -1044,6 +1131,7 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
             &mut *self.commands, &mut *self.meshes, &mut *self.materials, &mut *self.colliders,
             track, branch, derail_node,
         );
+        self.sync_floor_mats(); // the cart reserved raw collider slots — tag them Normal
         self.rail_ties(track);
         if let Some((_, tail)) = branch {
             self.rail_ties(tail);
@@ -1093,6 +1181,7 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
             &mut *self.commands, &mut *self.meshes, &mut *self.materials, &mut *self.colliders,
             weaver_pos, a, b,
         );
+        self.sync_floor_mats(); // the strand reserved raw collider slots — tag them Normal
     }
 
     /// An emissive "slipgate"/portal slab using the theme accent material.
