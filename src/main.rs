@@ -25,6 +25,7 @@ mod physics;
 mod pickups;
 mod player;
 mod projectiles;
+mod rail;
 mod resonance;
 mod vehicle;
 mod weapons;
@@ -139,6 +140,7 @@ fn main() {
             pickups::PickupsPlugin,
             gamestate::GameStatePlugin,
             vehicle::VehiclePlugin,
+            rail::RailCartPlugin,
             mount::MountPlugin,
             web::WebPlugin,
         ))

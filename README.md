@@ -1,7 +1,7 @@
-# QUAKECLONE — *Eight Dimensions*
+# QUAKECLONE — *Eleven Dimensions*
 
-An eight-level, Quake-flavoured first-person shooter written from scratch in **Rust + Bevy 0.19**.
-WASD + mouse, Quake-style movement physics, seven weapons, seven monster types, eight hand-built brush
+An eleven-level, Quake-flavoured first-person shooter written from scratch in **Rust + Bevy 0.19**.
+WASD + mouse, Quake-style movement physics, seven weapons, seven monster types, eleven hand-built brush
 maps each with its own theme, key-locked doors, environmental hazards, gibs, explosions and a
 procedurally-synthesised sound set — it boots straight into the campaign and each level plays through
 in a few minutes.
@@ -50,24 +50,30 @@ if it's missing or malformed the defaults above apply.
 
 ## The campaign
 
-Eight self-contained dimensions, each a hand-built brush map with its own theme, textures, fog,
+Eleven self-contained dimensions, each a hand-built brush map with its own theme, textures, fog,
 lighting and hazard. Every level is the same Quake loop — **grab the Silver Key → open the locked
 door → reach the exit slipgate** — but the world around it changes completely:
 
 1. **Dimension of the Doomed** — the original dark techbase-dungeon, lava and a Death Knight vault.
 2. **Frostspire Keep** — a winter ice fortress; cross a cracked frozen lake on ice-block stepping
    stones, climb to the keep.
-3. **The Brass Leviathan** — a vertical steampunk clockwork foundry; ascending catwalks over a
+3. **Blackvein Deep** — a collapsed ore mine descending into the dark; grimy stone galleries lit by
+   glowing ore-veins and lanterns, molten run-off pooled in the deeps.
+4. **The Brass Leviathan** — a vertical steampunk clockwork foundry; ascending catwalks over a
    molten-metal channel, giant gears, a brass bulkhead.
-4. **Tomb of the Sunken King** — an Egyptian desert tomb descending underground; obelisks, gold
+5. **Tomb of the Sunken King** — an Egyptian desert tomb descending underground; obelisks, gold
    sarcophagi, cursed quicksand pits, a pharaoh's vault.
-5. **The Verdant Rot** — an alien bio-hive / toxic lab; organic tunnels, toxic-sludge canals,
+6. **The Brine Gallery** — a flooded sea-cavern; damp grey-blue stone galleries over dark, drowning
+   seawater, sea-mist hanging in the air.
+7. **The Verdant Rot** — an alien bio-hive / toxic lab; organic tunnels, toxic-sludge canals,
    pulsating egg chambers, a Queen's nest.
-6. **The Salt Wraith** — a sci-fi sky-pirate galleon among the clouds; open decks, plank bridges
+8. **The Salt Wraith** — a sci-fi sky-pirate galleon among the clouds; open decks, plank bridges
    over a plasma-engine void, masts and energy sails, a captain's cabin vault.
-7. **Sanctum of the Void** — the cosmic sanctum; floating obsidian islands and glowing crystal
+9. **Shatterglass Vein** — a radiant crystal mine; glassy magenta veins blazing through near-black
+   rock, brittle crystal shelves over a lethal glow.
+10. **Sanctum of the Void** — the cosmic sanctum; floating obsidian islands and glowing crystal
    bridges over a lethal void rift, a Death Knight boss guarding the key.
-8. **The Drowned Colossus** — the finale and a deliberate big-space stress test; you fight along the
+11. **The Drowned Colossus** — the finale and a deliberate big-space stress test; you fight along the
    crest of a colossal concrete dam. The crest is a convex arch that bulges toward the gorge, so the
    span, the spillway gate-houses and the staggered control piers reveal the dam a reach at a time
    rather than all at once. The reservoir is held high on one side; the face drops ~70m into a

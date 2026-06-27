@@ -278,6 +278,9 @@ pub enum ThemeId {
     Pirate,
     Void,
     Dam,
+    Mine,
+    Brine,
+    Crystal,
 }
 
 /// The acoustic profile of a brush material (feature 29): the note a surface
@@ -530,6 +533,56 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
             hazard_flash: rgb(0.5, 0.7, 0.95),
             // Reinforced concrete: a deep dull boom grinding up to a slab crack.
             voice: AcousticProfile::new(160.0, 8.0, 500.0),
+        },
+        // Blackvein Deep: a deep mine, reusing the tomb's stone set under a dark
+        // warm-grey grime and the orange glow of ore-veins/lanterns in the dark.
+        Mine => ThemeSpec {
+            dir: "textures/world/tomb",
+            tint: rgb(0.5, 0.44, 0.36),
+            hazard_emissive: LinearRgba::rgb(3.0, 1.0, 0.2),
+            hazard_rough: 0.7,
+            accent: (rgb(1.0, 0.6, 0.25), LinearRgba::rgb(3.0, 1.2, 0.3)),
+            fog: (rgb(0.07, 0.06, 0.05), 14.0, 72.0),
+            ambient: (rgb(0.4, 0.34, 0.28), 160.0),
+            clear: rgb(0.02, 0.02, 0.02),
+            hazard_dot: 12.0,
+            hazard_flash: rgb(0.9, 0.4, 0.1),
+            // Rock: a low gritty thud grinding up to a dusty crack.
+            voice: AcousticProfile::new(170.0, 9.0, 500.0),
+        },
+        // The Brine Gallery: a flooded sea-cavern, reusing the frost set under a
+        // pale grey-blue cast with damp haze and dark seawater hazards.
+        Brine => ThemeSpec {
+            dir: "textures/world/frost",
+            tint: rgb(0.78, 0.82, 0.86),
+            hazard_emissive: LinearRgba::rgb(0.1, 0.35, 0.6),
+            hazard_rough: 0.2,
+            accent: (rgb(0.5, 0.8, 1.0), LinearRgba::rgb(0.7, 1.6, 3.0)),
+            fog: (rgb(0.28, 0.33, 0.38), 16.0, 64.0),
+            ambient: (rgb(0.5, 0.56, 0.62), 220.0),
+            clear: rgb(0.05, 0.07, 0.09),
+            hazard_dot: 16.0,
+            hazard_flash: rgb(0.3, 0.5, 0.9),
+            // Wet stone: a damp slap that rings up to a hollow knock.
+            voice: AcousticProfile::new(420.0, 15.0, 1260.0),
+        },
+        // Shatterglass Vein: a radiant crystal mine, reusing the void set but cast
+        // in bright teal-cyan (not Void's purple, which it sits right beside) so the
+        // two crystalline maps don't blur together — magenta-radiant veins still
+        // glow as its hazard, now against a cyan environment + cyan accent lighting.
+        Crystal => ThemeSpec {
+            dir: "textures/world/void",
+            tint: rgb(0.66, 0.98, 0.96),
+            hazard_emissive: LinearRgba::rgb(2.4, 0.5, 3.4),
+            hazard_rough: 0.3,
+            accent: (rgb(0.3, 1.0, 0.85), LinearRgba::rgb(0.9, 3.4, 3.0)),
+            fog: (rgb(0.03, 0.11, 0.11), 18.0, 90.0),
+            ambient: (rgb(0.4, 0.62, 0.6), 260.0),
+            clear: rgb(0.0, 0.04, 0.04),
+            hazard_dot: 26.0,
+            hazard_flash: rgb(0.4, 1.0, 0.9),
+            // Crystal: a bright glassy chime climbing to a shattering peal.
+            voice: AcousticProfile::new(340.0, 7.0, 1020.0),
         },
     }
 }
@@ -975,6 +1028,57 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
         crate::vehicle::spawn_truck(
             &mut *self.commands, &mut *self.meshes, &mut *self.materials, &mut *self.colliders, pos, yaw,
         );
+    }
+
+    /// A rideable **mine cart** bolted to a fixed rail spline (feature 45). `track`
+    /// is the polyline of cart ground-points the cart follows (it spawns parked at
+    /// `track[0]`, so set that a hair — ~0.05m — above the boarding floor). `branch`
+    /// optionally adds a shootable junction switch at node index `j` whose alternate
+    /// tail polyline `tail` (which must START at `track[j]`) the cart takes once the
+    /// switch is shot; `derail_node` optionally marks a shootable weak rail joint at
+    /// that node that rips the cart into the free-physics tumble. Spawns the cart,
+    /// reserves its moving collider slot (+ the marker slots) and strews visible
+    /// rail-tie deco along the line(s). A whole track is one call — see `crate::rail`.
+    pub fn rail(&mut self, track: &[Vec3], branch: Option<(usize, &[Vec3])>, derail_node: Option<usize>) {
+        crate::rail::spawn_cart(
+            &mut *self.commands, &mut *self.meshes, &mut *self.materials, &mut *self.colliders,
+            track, branch, derail_node,
+        );
+        self.rail_ties(track);
+        if let Some((_, tail)) = branch {
+            self.rail_ties(tail);
+        }
+    }
+
+    /// Strew visible cross-tie deco (visual only) along a rail polyline, a tie about
+    /// every 1.5m just under the cart's ground line, so the laid track reads as rails.
+    fn rail_ties(&mut self, track: &[Vec3]) {
+        if track.len() < 2 {
+            return;
+        }
+        let mat = self.theme.trim.clone();
+        const SPACING: f32 = 1.5;
+        for w in track.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let seg = b - a;
+            let l = seg.length();
+            if l < 1e-3 {
+                continue;
+            }
+            let dir = seg / l;
+            let mut d = 0.0;
+            while d < l {
+                let p = a + dir * d;
+                // A short axis-aligned crosstie sunk just below the cart's ground
+                // point (deco, no collision — it never blocks the cart or a rider).
+                self.deco(
+                    Vec3::new(p.x - 0.9, p.y - 0.22, p.z - 0.16),
+                    Vec3::new(p.x + 0.9, p.y - 0.06, p.z + 0.16),
+                    mat.clone(),
+                );
+                d += SPACING;
+            }
+        }
     }
 
     /// Place a Weaver spider guarding a walkable silk strand from anchor `a` to

@@ -99,6 +99,11 @@ struct TireSound;
 
 /// A drivable vehicle. The entity's `Transform.translation` is its ground point
 /// (centre of the footprint, at floor level); `yaw` is its heading.
+///
+/// The footprint dimensions live on the component (not module consts) so the same
+/// `ride`/`footprint_aabb`/`rammed`/drive systems serve bodies of different sizes
+/// — the truck (set by [`spawn_truck`]) and the smaller mine cart (set by
+/// [`crate::rail::spawn_cart`]) share every system at their own size.
 #[derive(Component)]
 pub struct Vehicle {
     pub yaw: f32,
@@ -114,6 +119,16 @@ pub struct Vehicle {
     pub last_delta: Vec3,
     /// Yaw change applied this frame, consumed by the rider carry.
     pub last_dyaw: f32,
+    /// Half width across the body (local X) — footprint + deck extent.
+    pub half_w: f32,
+    /// Half length along the body (local Z).
+    pub half_l: f32,
+    /// Deck height: the standing surface sits this high above the ground point,
+    /// and the collider body spans ground → deck.
+    pub body_h: f32,
+    /// Where the driver stands to board (local space). E within reach of this
+    /// point (and on the deck) takes the wheel.
+    pub driver_local: Vec3,
 }
 
 pub struct VehiclePlugin;
@@ -143,38 +158,41 @@ impl Plugin for VehiclePlugin {
 // ----------------------------------------------------------------------------
 // Geometry helpers
 // ----------------------------------------------------------------------------
-fn degenerate() -> Aabb {
+pub(crate) fn degenerate() -> Aabb {
     Aabb { min: Vec3::splat(1.0e6), max: Vec3::splat(1.0e6 + 0.01) }
 }
 
-/// World-space half-extents (x, z) of the footprint rotated by `yaw`. The solver
-/// is axis-aligned, so a turned truck gets the bounding box of its rotated
+/// World-space half-extents (x, z) of a `hw`×`hl` footprint rotated by `yaw`. The
+/// solver is axis-aligned, so a turned body gets the bounding box of its rotated
 /// footprint — exact at right angles, a little generous on the diagonal.
-fn footprint_half(yaw: f32) -> Vec2 {
+pub(crate) fn footprint_half(yaw: f32, hw: f32, hl: f32) -> Vec2 {
     let (s, c) = yaw.sin_cos();
-    Vec2::new(HALF_W * c.abs() + HALF_L * s.abs(), HALF_W * s.abs() + HALF_L * c.abs())
+    Vec2::new(hw * c.abs() + hl * s.abs(), hw * s.abs() + hl * c.abs())
 }
 
-/// The footprint collider (ground → deck top) for a truck at `t`/`yaw`.
-fn footprint_aabb(t: Vec3, yaw: f32) -> Aabb {
-    let h = footprint_half(yaw);
-    let center = Vec3::new(t.x, t.y + BODY_H * 0.5, t.z);
-    Aabb::from_center_half(center, Vec3::new(h.x, BODY_H * 0.5, h.y))
+/// The footprint collider (ground → deck top) for a body at `t`/`yaw` with the
+/// given half-extents and deck height.
+pub(crate) fn footprint_aabb(t: Vec3, yaw: f32, hw: f32, hl: f32, bh: f32) -> Aabb {
+    let h = footprint_half(yaw, hw, hl);
+    let center = Vec3::new(t.x, t.y + bh * 0.5, t.z);
+    Aabb::from_center_half(center, Vec3::new(h.x, bh * 0.5, h.y))
 }
 
-/// If `rider` is resting on the deck of the truck at `t`/`yaw`, return where the
-/// truck's motion this frame (`delta` translation + `dyaw` rotation about its
-/// centre) carries it to. `None` if the rider isn't on the deck.
-fn ride(rider: Vec3, half_y: f32, t: Vec3, yaw: f32, delta: Vec3, dyaw: f32) -> Option<Vec3> {
-    // Project the rider into the truck's local frame to test the footprint.
+/// If `rider` is resting on the deck of the body at `t`/`yaw` (footprint `hw`×`hl`,
+/// deck height `bh`), return where the body's motion this frame (`delta`
+/// translation + `dyaw` rotation about its centre) carries it to. `None` if the
+/// rider isn't on the deck.
+#[allow(clippy::too_many_arguments)]
+fn ride(rider: Vec3, half_y: f32, t: Vec3, yaw: f32, delta: Vec3, dyaw: f32, hw: f32, hl: f32, bh: f32) -> Option<Vec3> {
+    // Project the rider into the body's local frame to test the footprint.
     let (s, c) = yaw.sin_cos();
     let (rx, rz) = (rider.x - t.x, rider.z - t.z);
     let lx = rx * c - rz * s;
     let lz = rx * s + rz * c;
-    if lx.abs() > HALF_W + 0.4 || lz.abs() > HALF_L + 0.4 {
+    if lx.abs() > hw + 0.4 || lz.abs() > hl + 0.4 {
         return None;
     }
-    let deck_top = t.y + BODY_H;
+    let deck_top = t.y + bh;
     let feet = rider.y - half_y;
     if feet < deck_top - 0.3 || feet > deck_top + 0.85 {
         return None;
@@ -193,18 +211,18 @@ fn ride(rider: Vec3, half_y: f32, t: Vec3, yaw: f32, delta: Vec3, dyaw: f32) -> 
 /// frame footprint test as [`ride`], grown by the monster's plan radius, plus a
 /// vertical band so we hit grounded/low monsters with the body but not flyers
 /// hovering well above the deck.
-fn rammed(enemy: Vec3, ehalf: Vec3, t: Vec3, yaw: f32) -> bool {
+fn rammed(enemy: Vec3, ehalf: Vec3, t: Vec3, yaw: f32, hw: f32, hl: f32, bh: f32) -> bool {
     let (s, c) = yaw.sin_cos();
     let (rx, rz) = (enemy.x - t.x, enemy.z - t.z);
     let lx = rx * c - rz * s;
     let lz = rx * s + rz * c;
     let r = ehalf.x.max(ehalf.z);
-    if lx.abs() > HALF_W + r || lz.abs() > HALF_L + r {
+    if lx.abs() > hw + r || lz.abs() > hl + r {
         return false;
     }
     let elow = enemy.y - ehalf.y;
     let ehigh = enemy.y + ehalf.y;
-    elow < t.y + BODY_H + 0.5 && ehigh > t.y - 0.3
+    elow < t.y + bh + 0.5 && ehigh > t.y - 0.3
 }
 
 fn coast(speed: f32, dt: f32) -> f32 {
@@ -265,7 +283,7 @@ pub fn spawn_truck(
     // last few millimetres lets the solver leave the gap that keeps it drivable.
     let pos = pos + Vec3::Y * 0.05;
     let collider = colliders.len();
-    colliders.push(footprint_aabb(pos, yaw));
+    colliders.push(footprint_aabb(pos, yaw, HALF_W, HALF_L, BODY_H));
 
     // Materials: a rugged safety-orange work truck so it reads as a vehicle.
     let body = materials.add(StandardMaterial {
@@ -327,7 +345,18 @@ pub fn spawn_truck(
         .spawn((
             Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw)),
             Visibility::default(),
-            Vehicle { yaw, vel: Vec3::ZERO, yaw_rate: 0.0, collider, last_delta: Vec3::ZERO, last_dyaw: 0.0 },
+            Vehicle {
+                yaw,
+                vel: Vec3::ZERO,
+                yaw_rate: 0.0,
+                collider,
+                last_delta: Vec3::ZERO,
+                last_dyaw: 0.0,
+                half_w: HALF_W,
+                half_l: HALF_L,
+                body_h: BODY_H,
+                driver_local: DRIVER_LOCAL,
+            },
             LevelEntity,
             Name::new("Truck"),
         ))
@@ -370,8 +399,8 @@ pub(crate) fn vehicle_activate(
     }
     let Ok(ptf) = q_player.single() else { return };
     for (e, vtf, v) in &q_veh {
-        let on_deck = ride(ptf.translation, PLAYER_HALF[1], vtf.translation, v.yaw, Vec3::ZERO, 0.0).is_some();
-        let driver = vtf.translation + Quat::from_rotation_y(v.yaw) * DRIVER_LOCAL;
+        let on_deck = ride(ptf.translation, PLAYER_HALF[1], vtf.translation, v.yaw, Vec3::ZERO, 0.0, v.half_w, v.half_l, v.body_h).is_some();
+        let driver = vtf.translation + Quat::from_rotation_y(v.yaw) * v.driver_local;
         let near = (ptf.translation.x - driver.x).hypot(ptf.translation.z - driver.z) < 2.4;
         if on_deck && near {
             active.0 = Some(e);
@@ -382,14 +411,20 @@ pub(crate) fn vehicle_activate(
     }
 }
 
-/// Integrate every vehicle's motion and rewrite its collider slot. Only the one
-/// in [`ActiveVehicle`] reads WASD; the rest coast to a stop and settle.
-fn vehicle_drive(
+/// Integrate every vehicle's *free* motion and rewrite its collider slot. Only the
+/// one in [`ActiveVehicle`] reads WASD; the rest coast to a stop and settle.
+///
+/// A mine cart still *attached* to its rail is driven by [`crate::rail::rail_follow`]
+/// instead (it follows the spline, not a free velocity), so this skips it — but the
+/// instant it derails (`RailCart.attached = false`) it falls back here and the free
+/// velocity + angular physics below take over its tumble for free.
+pub(crate) fn vehicle_drive(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     active: Res<ActiveVehicle>,
     mut colliders: ResMut<WorldColliders>,
     mut q: Query<(Entity, &mut Transform, &mut Vehicle)>,
+    q_rail: Query<&crate::rail::RailCart>,
     mut sfx: MessageWriter<Sfx>,
 ) {
     let dt = time.delta_secs();
@@ -397,6 +432,10 @@ fn vehicle_drive(
         return;
     }
     for (e, mut tf, mut v) in &mut q {
+        // A rail-bound cart is the spline-follower's to move; leave its slot alone.
+        if q_rail.get(e).map(|c| c.attached).unwrap_or(false) {
+            continue;
+        }
         let driving = active.0 == Some(e);
 
         // --- driving in the heading frame ----------------------------------
@@ -453,14 +492,15 @@ fn vehicle_drive(
 
         // --- sweep the footprint (excluding our own slot) ------------------
         let old_t = tf.translation;
-        let h = footprint_half(yaw);
-        let half = Vec3::new(h.x, BODY_H * 0.5, h.y);
-        let center = Vec3::new(old_t.x, old_t.y + BODY_H * 0.5, old_t.z);
+        let bh = v.body_h;
+        let h = footprint_half(yaw, v.half_w, v.half_l);
+        let half = Vec3::new(h.x, bh * 0.5, h.y);
+        let center = Vec3::new(old_t.x, old_t.y + bh * 0.5, old_t.z);
         if let Some(slot) = colliders.solids.get_mut(v.collider) {
             *slot = degenerate();
         }
         let res = move_and_slide(center, half, vel, dt, &colliders.solids, STEP);
-        let new_t = Vec3::new(res.pos.x, res.pos.y - BODY_H * 0.5, res.pos.z);
+        let new_t = Vec3::new(res.pos.x, res.pos.y - bh * 0.5, res.pos.z);
 
         // The slide already stripped the into-wall component, leaving the
         // tangential slide. Add the rebound + spin of a crash on top.
@@ -493,7 +533,7 @@ fn vehicle_drive(
         v.yaw_rate = yaw_rate;
 
         if let Some(slot) = colliders.solids.get_mut(v.collider) {
-            *slot = footprint_aabb(new_t, yaw);
+            *slot = footprint_aabb(new_t, yaw, v.half_w, v.half_l, bh);
         }
     }
 }
@@ -502,7 +542,7 @@ fn vehicle_drive(
 /// the "friction" that keeps the player (and monsters) aboard. Runs after the
 /// truck has moved and before the player resolves its own collision.
 #[allow(clippy::type_complexity)]
-fn vehicle_carry(
+pub(crate) fn vehicle_carry(
     q_veh: Query<(&Transform, &Vehicle), (With<Vehicle>, Without<Player>, Without<Enemy>)>,
     mut q_player: Query<(&mut Transform, &mut Player), (With<Player>, Without<Enemy>, Without<Vehicle>)>,
     mut q_enemy: Query<(&mut Transform, &Enemy), (With<Enemy>, Without<Player>, Without<Vehicle>)>,
@@ -513,7 +553,7 @@ fn vehicle_carry(
         }
         let t = vtf.translation;
         if let Ok((mut ptf, mut p)) = q_player.single_mut() {
-            if let Some(np) = ride(ptf.translation, PLAYER_HALF[1], t, v.yaw, v.last_delta, v.last_dyaw) {
+            if let Some(np) = ride(ptf.translation, PLAYER_HALF[1], t, v.yaw, v.last_delta, v.last_dyaw, v.half_w, v.half_l, v.body_h) {
                 ptf.translation = np;
                 // Turn the player's view with the deck so facing stays consistent.
                 p.yaw += v.last_dyaw;
@@ -521,7 +561,7 @@ fn vehicle_carry(
             }
         }
         for (mut etf, en) in &mut q_enemy {
-            if let Some(np) = ride(etf.translation, en.half.y, t, v.yaw, v.last_delta, v.last_dyaw) {
+            if let Some(np) = ride(etf.translation, en.half.y, t, v.yaw, v.last_delta, v.last_dyaw, v.half_w, v.half_l, v.body_h) {
                 etf.translation = np;
             }
         }
@@ -555,7 +595,7 @@ fn vehicle_ram(
         let dir = planar / speed;
         let t = vtf.translation;
         for (e, etf, mut en, hp) in &mut q_enemy {
-            if en.ram_cd > 0.0 || !rammed(etf.translation, en.half, t, v.yaw) {
+            if en.ram_cd > 0.0 || !rammed(etf.translation, en.half, t, v.yaw, v.half_w, v.half_l, v.body_h) {
                 continue;
             }
             en.ram_cd = RAM_CD;
@@ -734,7 +774,7 @@ mod tests {
     fn rams_monster_in_front() {
         let truck = Vec3::ZERO; // yaw 0 → forward -Z
         let enemy = Vec3::new(0.0, 0.9, -2.0); // ahead, on the deck-height band
-        assert!(rammed(enemy, EHALF, truck, 0.0));
+        assert!(rammed(enemy, EHALF, truck, 0.0, HALF_W, HALF_L, BODY_H));
     }
 
     /// A monster off to the side, clear of the footprint, is not rammed.
@@ -742,7 +782,7 @@ mod tests {
     fn no_ram_when_clear_to_the_side() {
         let truck = Vec3::ZERO;
         let enemy = Vec3::new(5.0, 0.9, 0.0); // well outside HALF_W + plan radius
-        assert!(!rammed(enemy, EHALF, truck, 0.0));
+        assert!(!rammed(enemy, EHALF, truck, 0.0, HALF_W, HALF_L, BODY_H));
     }
 
     /// A Scrag hovering well above the truck body passes over it, not rammed.
@@ -750,7 +790,7 @@ mod tests {
     fn no_ram_for_flyer_above_the_body() {
         let truck = Vec3::ZERO;
         let enemy = Vec3::new(0.0, 3.0, -2.0); // centred above, feet at 2.1 > body top
-        assert!(!rammed(enemy, EHALF, truck, 0.0));
+        assert!(!rammed(enemy, EHALF, truck, 0.0, HALF_W, HALF_L, BODY_H));
     }
 
     /// The footprint rotates with the truck: a monster off the +X axis is rammed
@@ -759,8 +799,8 @@ mod tests {
     fn ram_footprint_follows_yaw() {
         let truck = Vec3::ZERO;
         let enemy = Vec3::new(-2.0, 0.9, 0.0); // beside the unturned truck (along its short axis)
-        assert!(!rammed(enemy, EHALF, truck, 0.0), "beyond the short half-width when unturned");
+        assert!(!rammed(enemy, EHALF, truck, 0.0, HALF_W, HALF_L, BODY_H), "beyond the short half-width when unturned");
         // Yaw +90°: the long axis now lies along world X, so the same monster is in reach.
-        assert!(rammed(enemy, EHALF, truck, FRAC_PI_2));
+        assert!(rammed(enemy, EHALF, truck, FRAC_PI_2, HALF_W, HALF_L, BODY_H));
     }
 }

@@ -12,7 +12,7 @@
     // Set to false to uncap — handy for reading the fps meter.
     vsync: true,
 
-    // Which level a fresh run starts on: a number 1-8 (default 1), or "random".
+    // Which level a fresh run starts on: a number 1-11 (default 1), or "random".
     // Finishing a level still carries you into the next one regardless.
     start_level: "8",
 )

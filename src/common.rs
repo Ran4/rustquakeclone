@@ -298,7 +298,7 @@ pub enum GameState {
 
 /// How many levels the campaign has. A fresh run starts at a random one and
 /// then advances level-by-level to the last; finishing the last one wins.
-pub const NUM_LEVELS: usize = 8;
+pub const NUM_LEVELS: usize = 11;
 
 /// Marker for entities that belong to the active mission and should be cleared
 /// when the level is rebuilt on restart.

@@ -16,7 +16,7 @@ pub struct Config {
     pub height: u32,
     /// Cap the frame rate to the monitor's refresh rate (avoids tearing).
     pub vsync: bool,
-    /// Which level a fresh run begins on: `1`..`8` (default `1`), or `"random"`.
+    /// Which level a fresh run begins on: `1`..`11` (default `1`), or `"random"`.
     pub start_level: StartLevel,
 }
 
@@ -28,7 +28,7 @@ impl Default for Config {
 
 /// The configured starting level. Accepts a bare integer (`start_level: 3`) or a
 /// string (`start_level: "random"` / `start_level: "3"`) in `config.ron`. The
-/// number is 1-based (level 1..8); it is range-clamped where it's consumed.
+/// number is 1-based (level 1..11); it is range-clamped where it's consumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartLevel {
     Random,
@@ -50,7 +50,7 @@ impl<'de> Deserialize<'de> for StartLevel {
         impl serde::de::Visitor<'_> for V {
             type Value = StartLevel;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str(r#"a level number 1-8 or the string "random""#)
+                f.write_str(r#"a level number 1-11 or the string "random""#)
             }
             fn visit_u64<E: serde::de::Error>(self, n: u64) -> Result<StartLevel, E> {
                 Ok(StartLevel::Fixed((n as usize).max(1)))
@@ -65,7 +65,7 @@ impl<'de> Deserialize<'de> for StartLevel {
                 } else if let Ok(n) = t.parse::<usize>() {
                     Ok(StartLevel::Fixed(n.max(1)))
                 } else {
-                    Err(E::custom(format!(r#"invalid start_level {s:?} (use 1-8 or "random")"#)))
+                    Err(E::custom(format!(r#"invalid start_level {s:?} (use 1-11 or "random")"#)))
                 }
             }
         }

@@ -282,7 +282,7 @@ fn spawn_dead_ui(mut commands: Commands) {
 fn spawn_victory_ui(mut commands: Commands) {
     commands.spawn(overlay_root()).with_children(|p| {
         p.spawn((Text::new("CONGRATULATIONS!"), TextFont { font_size: FontSize::Px(82.0), ..default() }, TextColor(rgb(1.0, 0.85, 0.3))));
-        p.spawn((Text::new("You have conquered all seven dimensions."), TextFont { font_size: FontSize::Px(30.0), ..default() }, TextColor(rgb(0.95, 0.95, 0.95))));
+        p.spawn((Text::new("You have conquered all eleven dimensions."), TextFont { font_size: FontSize::Px(30.0), ..default() }, TextColor(rgb(0.95, 0.95, 0.95))));
         p.spawn((Text::new("YOU WIN"), TextFont { font_size: FontSize::Px(40.0), ..default() }, TextColor(rgb(0.6, 1.0, 0.6))));
         p.spawn((Text::new("Press R to play again"), TextFont { font_size: FontSize::Px(26.0), ..default() }, TextColor(rgb(0.8, 0.8, 0.8))));
     });
