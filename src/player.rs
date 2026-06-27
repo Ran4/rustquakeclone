@@ -263,6 +263,7 @@ pub(crate) fn player_move(
     colliders: Res<WorldColliders>,
     active: Res<crate::vehicle::ActiveVehicle>,
     mount: Res<crate::mount::ActiveMount>,
+    gunner: Res<crate::vehicle::ActiveGunner>,
     mut q: Query<(&mut Transform, &mut Player, &mut Knockback, &mut crate::weapons::Grapple)>,
     mut sfx: MessageWriter<Sfx>,
 ) {
@@ -272,10 +273,12 @@ pub(crate) fn player_move(
     }
     let Ok((mut tf, mut p, mut kb, mut grap)) = q.single_mut() else { return };
 
-    // While driving a vehicle OR riding a mounted Ogre, WASD/Space belong to the
-    // vehicle/mount — the player just stands on the deck/saddle (carried by
-    // `vehicle_carry` / `mount_carry`) but still falls/collides.
-    let driving = active.0.is_some() || mount.0.is_some();
+    // While driving a vehicle, riding a mounted Ogre, OR crewing the pintle gun,
+    // WASD/Space belong to that seat — the player just stands on the deck/saddle
+    // (kept aboard by `vehicle_carry` / `mount_carry`) but still falls/collides.
+    // Locking the gunner here keeps them pinned at the pintle (so they can't
+    // walk/jump off the deck and keep firing the cannon from a point they've left).
+    let driving = active.0.is_some() || mount.0.is_some() || gunner.0.is_some();
 
     // Consume any accumulated knockback (rocket jumps, enemy hits).
     if kb.0 != Vec3::ZERO {

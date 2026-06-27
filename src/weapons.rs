@@ -13,7 +13,7 @@ use crate::mount::{ActiveMount, WhipHit};
 use crate::physics::{line_of_sight, ray_aabb, raycast_world, raycast_world_indexed, Aabb};
 use crate::player::{Player, PlayerCamera};
 use crate::projectiles::{spawn_projectile, ProjKind, WhipParry};
-use crate::vehicle::ActiveVehicle;
+use crate::vehicle::{ActiveGunner, ActiveVehicle};
 
 pub struct WeaponsPlugin;
 impl Plugin for WeaponsPlugin {
@@ -385,6 +385,7 @@ pub(crate) fn fire_weapon(
     limb_boxes: Res<LimbBoxes>,
     gfx: Res<GfxAssets>,
     active_mount: Res<ActiveMount>,
+    active_gunner: Res<ActiveGunner>,
     mut rng_state: Local<u32>,
     mut nail_alt: Local<bool>,
     mut q_player: Query<(Entity, &mut Inventory)>,
@@ -402,6 +403,12 @@ pub(crate) fn fire_weapon(
     // `mount::mount_fire`) is your only weapon. Suppress BOTH the normal-fire path
     // and the Lodestone alt-fire by bailing before either is reached.
     if active_mount.0.is_some() {
+        return;
+    }
+    // Likewise while crewing the truck's pintle cannon: the deck gun (run by
+    // `vehicle::gun_fire`) takes the left mouse, so the hand weapon is stowed and
+    // both its primary and alt-fire are suppressed here.
+    if active_gunner.0.is_some() {
         return;
     }
 
@@ -604,6 +611,7 @@ fn grapple_cast(
     mouse: Res<ButtonInput<MouseButton>>,
     colliders: Res<WorldColliders>,
     active: Res<ActiveVehicle>,
+    gunner: Res<ActiveGunner>,
     cam: Query<&GlobalTransform, With<PlayerCamera>>,
     mut q: Query<(&Transform, &Inventory, &mut Grapple), With<Player>>,
     mut sfx: MessageWriter<Sfx>,
@@ -613,10 +621,14 @@ fn grapple_cast(
     let Ok((ptf, inv, mut grap)) = q.single_mut() else { return };
     let center = ptf.translation;
 
-    // Want to be (or stay) latched: RMB held, Whip equipped, on foot.
+    // Want to be (or stay) latched: RMB held, Whip equipped, on foot — and NOT
+    // crewing the pintle gun (the hand weapon, grapnel included, is stowed while
+    // you're behind the cannon, matching the `ActiveGunner` guards in `fire_weapon`
+    // / `update_viewmodel`; a hook held when you board the gun detaches here).
     let want = mouse.pressed(MouseButton::Right)
         && inv.current == WeaponKind::Whip
-        && active.0.is_none();
+        && active.0.is_none()
+        && gunner.0.is_none();
 
     // --- maintain / detach an existing hook --------------------------------
     if let Some(hook) = grap.hook.as_ref() {
@@ -877,13 +889,24 @@ fn update_viewmodel(
     time: Res<Time>,
     mut kick: ResMut<ViewKick>,
     vis: Res<WeaponVis>,
+    active_gunner: Res<ActiveGunner>,
     q_player: Query<(&Inventory, &Player)>,
-    mut q_vm: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>), With<ViewModel>>,
+    mut q_vm: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>, &mut Visibility), With<ViewModel>>,
 ) {
     let dt = time.delta_secs();
     kick.amount = (kick.amount - dt * 6.0).max(0.0);
     let Ok((inv, player)) = q_player.single() else { return };
-    let Ok((mut tf, mut mat)) = q_vm.single_mut() else { return };
+    let Ok((mut tf, mut mat, mut vmvis)) = q_vm.single_mut() else { return };
+    // Stow the first-person hand weapon entirely while crewing the pintle cannon —
+    // the deck gun is the active weapon, so hide the view-model and skip its bob/kick.
+    let stow = active_gunner.0.is_some();
+    let want = if stow { Visibility::Hidden } else { Visibility::Inherited };
+    if *vmvis != want {
+        *vmvis = want;
+    }
+    if stow {
+        return;
+    }
     let idx = inv.current.index();
     if mat.0 != vis.mats[idx] {
         mat.0 = vis.mats[idx].clone();

@@ -312,6 +312,9 @@ pub fn spawn_cart(
                 half_l: CART_HALF_L,
                 body_h: CART_BODY_H,
                 driver_local: Vec3::new(0.0, CART_BODY_H, 0.0),
+                // The mine cart mounts no pintle gun; park the gun seat far out of
+                // any deck reach so `gun_activate`'s near-test can never crew it.
+                gun_local: Vec3::splat(1.0e6),
             },
             RailCart {
                 track_a,

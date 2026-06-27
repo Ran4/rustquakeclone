@@ -97,6 +97,15 @@ pub struct Projectile {
     /// player can NEVER be hurt by the splash of a shot they batted back, no matter
     /// the geometry.
     pub returned: bool,
+    /// True for the mounted pintle cannon shell (feature 46): its blast must never
+    /// touch its own firer. The cannon's muzzle is bolted to the rear of the deck,
+    /// decoupled from where the gunner stands, and aims along the camera — so a
+    /// shot loosed down at the truck's base, or while the bed is bounced against a
+    /// wall, could detonate inside the 5.5m radius and rocket-jump the operator off
+    /// the rail-less deck. Unlike the hand rocket launcher (whose self-jump is a
+    /// feature), a manned deck gun shouldn't fling its own gunner: `handle_explosions`
+    /// skips the blast's `source` entirely when this is set.
+    pub no_self_blast: bool,
 }
 
 impl Projectile {
@@ -147,6 +156,7 @@ pub fn spawn_projectile(
             trail: 0.0,
             lodestone: false,
             returned: false,
+            no_self_blast: false,
         },
         LevelEntity,
     ));
@@ -186,12 +196,53 @@ pub fn spawn_lodestone(commands: &mut Commands, gfx: &GfxAssets, pos: Vec3, dir:
                 trail: 0.0,
                 lodestone: true,
                 returned: false,
+                no_self_blast: false,
             },
             LevelEntity,
         ))
         .with_children(|p| {
             p.spawn((
                 PointLight { color: rgb(0.5, 0.2, 1.0), intensity: 150_000.0, range: 10.0, shadow_maps_enabled: false, ..default() },
+                Transform::default(),
+            ));
+        });
+}
+
+/// Spawn a pintle-cannon shell (feature 46): a heavier, harder-hitting cousin of
+/// the rocket fired from the flatbed's deck gun. It reuses [`ProjKind::Rocket`] —
+/// so `projectile_move` detonates it on any contact and `combat::handle_explosions`
+/// runs the radius splash/falloff/knockback — but with a bigger blast and brutal
+/// knockback befitting a cannon, and a weightier muzzle velocity. Always
+/// player-owned (`source` is the gunner, for self-blast attribution).
+pub fn spawn_cannon_shell(commands: &mut Commands, gfx: &GfxAssets, pos: Vec3, dir: Vec3, source: Entity) {
+    let dir = dir.normalize_or_zero();
+    commands
+        .spawn((
+            Mesh3d(gfx.sphere.clone()),
+            MeshMaterial3d(gfx.rocket.clone()),
+            Transform::from_translation(pos + dir * 0.4).with_scale(Vec3::splat(0.42)),
+            Projectile {
+                vel: dir * 42.0,
+                life: 6.0,
+                fuse: 0.0,
+                gravity: 0.0,
+                kind: ProjKind::Rocket,
+                from_player: true,
+                source: Some(source),
+                damage: 0.0,
+                splash_radius: 5.5,
+                splash_damage: 130.0,
+                push: 34.0, // brutal knockback — flings monsters off the dam crest
+                trail: 0.0,
+                lodestone: false,
+                returned: false,
+                no_self_blast: true, // a manned deck gun never rocket-jumps its own gunner
+            },
+            LevelEntity,
+        ))
+        .with_children(|p| {
+            p.spawn((
+                PointLight { color: rgb(1.0, 0.55, 0.25), intensity: 160_000.0, range: 9.0, shadow_maps_enabled: false, ..default() },
                 Transform::default(),
             ));
         });
@@ -316,6 +367,7 @@ pub(crate) fn projectile_move(
                 implode: true,
                 direct_limb: None,
                 returned: false,
+                no_self_blast: p.no_self_blast,
             });
             if p.fuse <= 0.0 {
                 let pos = tf.translation;
@@ -330,6 +382,7 @@ pub(crate) fn projectile_move(
                     implode: false,
                     direct_limb: None,
                     returned: false,
+                    no_self_blast: p.no_self_blast,
                 });
                 sfx.write(Sfx::pitched(Sound::Explosion, pos, 0.8));
                 commands.entity(e).despawn();
@@ -443,6 +496,7 @@ pub(crate) fn projectile_move(
                         implode: false,
                         direct_limb,
                         returned: p.returned,
+                        no_self_blast: p.no_self_blast,
                     });
                     sfx.write(Sfx::at(Sound::Explosion, pos));
                     exploded = true;
@@ -491,7 +545,7 @@ pub(crate) fn projectile_move(
         // blast radius than a grenade that explodes on a direct hit.
         if !exploded && p.kind == ProjKind::Grenade && p.fuse <= 0.0 {
             let pos = tf.translation;
-            expl.write(ExplosionEvent { pos, radius: p.splash_radius * 1.5, damage: p.splash_damage, source: p.source, from_player: p.from_player, color: rgb(1.0, 0.6, 0.2), push: p.push, implode: false, direct_limb: None, returned: p.returned });
+            expl.write(ExplosionEvent { pos, radius: p.splash_radius * 1.5, damage: p.splash_damage, source: p.source, from_player: p.from_player, color: rgb(1.0, 0.6, 0.2), push: p.push, implode: false, direct_limb: None, returned: p.returned, no_self_blast: p.no_self_blast });
             sfx.write(Sfx::at(Sound::Explosion, pos));
             exploded = true;
         }

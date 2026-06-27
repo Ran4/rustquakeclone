@@ -46,6 +46,13 @@ pub(crate) fn handle_explosions(
             if ex.returned && self_blast {
                 continue;
             }
+            // Mounted pintle cannon (feature 46): its blast never touches its own
+            // gunner. The muzzle is fixed to the deck and aims along the camera, so a
+            // downward/point-blank shot could otherwise rocket-jump the operator off
+            // the rail-less bed — a manned deck gun shouldn't self-fling its crew.
+            if ex.no_self_blast && self_blast {
+                continue;
+            }
             if !ex.from_player && *faction == Faction::Monster {
                 continue; // monster splash doesn't harm other monsters (incl. the firer)
             }

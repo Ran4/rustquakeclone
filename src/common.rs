@@ -450,6 +450,11 @@ pub struct ExplosionEvent {
     /// `source` (the player) entirely for a returned blast. Makes the parry's
     /// self-immunity airtight regardless of blast geometry.
     pub returned: bool,
+    /// True for the mounted pintle cannon's shell (feature 46): like `returned`, it
+    /// makes `handle_explosions` skip the blast's `source` entirely, so a manned deck
+    /// gun can never fling or gib its own gunner with its own splash (the muzzle is
+    /// fixed to the deck, decoupled from where the gunner stands).
+    pub no_self_blast: bool,
 }
 
 /// A monster corpse left behind on death; fades out after the timer.

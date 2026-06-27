@@ -40,6 +40,21 @@ const HALF_L: f32 = 2.6;
 const BODY_H: f32 = 1.0;
 /// Where the driver stands, in local space — front-centre of the open cab.
 const DRIVER_LOCAL: Vec3 = Vec3::new(0.0, BODY_H, -HALF_L + 1.1);
+/// The pintle gun seat, in local space — bolted to the rear of the flatbed. Its
+/// X/Z is the spot you stand on to crew it (board with E); the Y is lifted to the
+/// barrel-pivot height so the same point doubles as the cannon's muzzle origin
+/// (the boarding test only reads X/Z, see [`gun_activate`]). It sits at the rear,
+/// away from [`DRIVER_LOCAL`] at the front — but the two boarding reaches still
+/// overlap on the deck, so single-press arbitration between the seats is enforced
+/// by ordering + the [`GunLeftThisPress`] latch, not by spatial separation.
+const GUN_LOCAL: Vec3 = Vec3::new(0.0, BODY_H + 0.78, 1.7);
+/// How far past the pintle (along the gunner's aim) the cannon shell spawns, so
+/// the muzzle clears the breech and the truck body.
+const GUN_BARREL: f32 = 1.0;
+/// How close (planar) the player must stand to the pintle to crew the gun.
+const GUN_REACH: f32 = 2.0;
+/// Seconds between cannon shots — a heavy, deliberate cycle.
+const GUN_COOLDOWN: f32 = 1.0;
 
 // -- driving feel ------------------------------------------------------------
 const ACCEL: f32 = 16.0; // throttle (W)
@@ -87,6 +102,27 @@ const TIRE_RELEASE: f32 = 6.0; // 1/s: slower screech fade-out
 #[derive(Resource, Default)]
 pub struct ActiveVehicle(pub Option<Entity>);
 
+/// Which truck the player is currently *crewing the pintle gun on* (`None` = not
+/// gunning). A distinct seat from [`ActiveVehicle`]: you either drive OR gun a
+/// given truck, never both, and the two are mutually exclusive at mount time
+/// (see [`gun_activate`] / [`vehicle_activate`]). A resource (not a marker) so
+/// `fire_weapon` sees the change the same frame it stows the normal gun, with no
+/// command-buffer latency — exactly the `ActiveVehicle`/`ActiveMount` pattern.
+#[derive(Resource, Default)]
+pub struct ActiveGunner(pub Option<Entity>);
+
+/// One-frame arbitration latch for the **E** key. The pintle-gun seat and the
+/// driver seat sit only 3.2m apart while their boarding reaches are 2.0m and 2.4m,
+/// so a band of the deck is within reach of BOTH — a single tap to hop off the
+/// cannon would otherwise clear `ActiveGunner` in `gun_activate` and then be re-read
+/// by the later-ordered `vehicle_activate`, yanking the player who meant to step off
+/// straight into the driver's seat. `gun_activate` clears this at the start of every
+/// E press and sets it only on its *leave* path; `vehicle_activate` (which runs
+/// after) honours it and bails. (Boarding needs no latch: it sets `gunner.0`, which
+/// `vehicle_activate` already guards on.)
+#[derive(Resource, Default)]
+pub(crate) struct GunLeftThisPress(bool);
+
 /// The single looping engine-note audio entity (only present while driving). Its
 /// [`AudioSink`] speed/volume are scrubbed each frame to track engine RPM.
 #[derive(Component)]
@@ -129,12 +165,18 @@ pub struct Vehicle {
     /// Where the driver stands to board (local space). E within reach of this
     /// point (and on the deck) takes the wheel.
     pub driver_local: Vec3,
+    /// The pintle gun seat (local space): X/Z is where you stand to crew the
+    /// cannon, Y is the barrel-pivot height that doubles as the muzzle origin.
+    /// See [`GUN_LOCAL`].
+    pub gun_local: Vec3,
 }
 
 pub struct VehiclePlugin;
 impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ActiveVehicle>()
+            .init_resource::<ActiveGunner>()
+            .init_resource::<GunLeftThisPress>()
             .add_systems(
                 Update,
                 (vehicle_activate, vehicle_drive, vehicle_carry, vehicle_ram, vehicle_audio)
@@ -148,9 +190,31 @@ impl Plugin for VehiclePlugin {
                     .before(crate::player::player_move)
                     .run_if(in_state(GameState::Playing)),
             )
+            // Boarding the gun seat: own the E press deterministically between the
+            // three seats. It runs AFTER `mount_activate` (so a mount made this
+            // frame is visible — it bails when one is) and BEFORE `vehicle_activate`
+            // (so a gun mount made this frame blocks the wheel), exactly mirroring
+            // the mount<->vehicle ordering already in `MountPlugin`. A single E tap
+            // can therefore never board two seats.
+            .add_systems(
+                Update,
+                gun_activate
+                    .after(crate::mount::mount_activate)
+                    .before(vehicle_activate)
+                    .run_if(in_state(GameState::Playing)),
+            )
+            // The cannon fires after the truck has moved/carried this frame, so the
+            // muzzle rides the freshly integrated deck translation + yaw.
+            .add_systems(
+                Update,
+                gun_fire
+                    .after(vehicle_carry)
+                    .run_if(in_state(GameState::Playing)),
+            )
             // The driven vehicle is a LevelEntity (despawned on rebuild); drop the
-            // dangling handle so a fresh level never starts in a phantom "driving",
-            // and silence the looping engine/tyre sounds on death/victory/exit.
+            // dangling handles so a fresh level never starts in a phantom "driving"
+            // or "gunning", and silence the looping engine/tyre sounds on
+            // death/victory/exit.
             .add_systems(OnExit(GameState::Playing), cleanup_vehicle_audio);
     }
 }
@@ -233,6 +297,16 @@ fn coast(speed: f32, dt: f32) -> f32 {
 /// Horizontal unit forward vector for a heading (local -Z, matching the player).
 fn forward(yaw: f32) -> Vec3 {
     Vec3::new(-yaw.sin(), 0.0, -yaw.cos())
+}
+
+/// World-space muzzle of the pintle cannon: the deck transform (`deck_pos` at yaw
+/// `deck_yaw`) applied to the local pintle offset `gun_local`, then pushed `barrel`
+/// metres along the gunner's `aim`. Both the deck translation AND its yaw feed in,
+/// so the muzzle rides every truck movement and spin; the final push is along the
+/// aim, so the shell leaves pointing wherever the gunner looks — independent of the
+/// truck's heading. Pure (no ECS) so the transform math is unit-testable.
+fn cannon_muzzle(deck_pos: Vec3, deck_yaw: f32, gun_local: Vec3, aim: Vec3, barrel: f32) -> Vec3 {
+    deck_pos + Quat::from_rotation_y(deck_yaw) * gun_local + aim.normalize_or_zero() * barrel
 }
 
 /// Crash response off a wall. `drive_planar` is the truck's intended planar
@@ -331,6 +405,17 @@ pub fn spawn_truck(
         (cube(meshes, Vec3::new(0.28, 0.2, 0.08)), light.clone(), Transform::from_xyz(-0.85, 0.7, -2.58)),
         (cube(meshes, Vec3::new(0.28, 0.2, 0.08)), light.clone(), Transform::from_xyz(0.85, 0.7, -2.58)),
     ];
+    // Pintle swivel cannon, bolted to the rear of the flatbed at GUN_LOCAL's X/Z.
+    // A stubby post rises from the deck to a boxy breech that carries a long barrel
+    // pointing forward (local -Z). It's a static prop — the live aim is the
+    // gunner's own mouse-look, not the model — but it reads as a manned gun.
+    let gx = GUN_LOCAL.x;
+    let gz = GUN_LOCAL.z;
+    parts.push((cube(meshes, Vec3::new(0.32, 0.7, 0.32)), dark.clone(), Transform::from_xyz(gx, BODY_H + 0.35, gz))); // pintle post
+    parts.push((cube(meshes, Vec3::new(0.6, 0.5, 0.66)), body.clone(), Transform::from_xyz(gx, BODY_H + 0.75, gz))); // breech
+    parts.push((cube(meshes, Vec3::new(0.24, 0.24, 1.55)), dark.clone(), Transform::from_xyz(gx, BODY_H + 0.82, gz - 0.95))); // barrel (points -Z)
+    parts.push((cube(meshes, Vec3::new(0.34, 0.34, 0.22)), dark.clone(), Transform::from_xyz(gx, BODY_H + 0.82, gz - 1.7))); // muzzle ring
+
     // Wheels: cylinders laid on their side (axis along X).
     let wheel = meshes.add(Cylinder { radius: 0.45, half_height: 0.15 });
     for (x, z) in [(-1.3, -1.75), (1.3, -1.75), (-1.3, 1.75), (1.3, 1.75)] {
@@ -356,6 +441,7 @@ pub fn spawn_truck(
                 half_l: HALF_L,
                 body_h: BODY_H,
                 driver_local: DRIVER_LOCAL,
+                gun_local: GUN_LOCAL,
             },
             LevelEntity,
             Name::new("Truck"),
@@ -377,6 +463,8 @@ pub(crate) fn vehicle_activate(
     keys: Res<ButtonInput<KeyCode>>,
     mut active: ResMut<ActiveVehicle>,
     mount: Res<crate::mount::ActiveMount>,
+    gunner: Res<ActiveGunner>,
+    gun_left: Res<GunLeftThisPress>,
     q_player: Query<&Transform, With<Player>>,
     q_veh: Query<(Entity, &Transform, &Vehicle)>,
     mut notify: MessageWriter<Notify>,
@@ -397,6 +485,18 @@ pub(crate) fn vehicle_activate(
     if mount.0.is_some() {
         return;
     }
+    // Likewise don't grab the wheel while crewing (or having just boarded, this
+    // frame) the pintle gun — they're distinct, mutually exclusive seats.
+    // `gun_activate` runs before us, so a gun mount made this frame blocks this.
+    if gunner.0.is_some() {
+        return;
+    }
+    // …and not when this same E press just *left* the pintle gun. The gun and driver
+    // boarding reaches overlap on the deck, so without this the tap that hops the
+    // player off the cannon would re-grab the wheel on the very same frame.
+    if gun_left.0 {
+        return;
+    }
     let Ok(ptf) = q_player.single() else { return };
     for (e, vtf, v) in &q_veh {
         let on_deck = ride(ptf.translation, PLAYER_HALF[1], vtf.translation, v.yaw, Vec3::ZERO, 0.0, v.half_w, v.half_l, v.body_h).is_some();
@@ -409,6 +509,105 @@ pub(crate) fn vehicle_activate(
             break;
         }
     }
+}
+
+/// Press **E**: leave the pintle gun you're crewing, or — on foot, standing on a
+/// truck's deck within reach of its pintle — climb behind the cannon.
+///
+/// Mutual exclusion with the other two seats is by ordering + guard, exactly like
+/// `mount_activate`/`vehicle_activate`: we leave our own seat first (consuming the
+/// press), and only ever *board* when neither an Ogre mount nor the wheel is taken.
+/// This system runs after `mount_activate` and before `vehicle_activate`, so a gun
+/// mount made this frame blocks both of them — a single tap can't board two seats.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gun_activate(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut gunner: ResMut<ActiveGunner>,
+    mut gun_left: ResMut<GunLeftThisPress>,
+    mount: Res<crate::mount::ActiveMount>,
+    vehicle: Res<ActiveVehicle>,
+    q_player: Query<&Transform, With<Player>>,
+    q_veh: Query<(Entity, &Transform, &Vehicle)>,
+    mut notify: MessageWriter<Notify>,
+    mut sfx: MessageWriter<Sfx>,
+) {
+    if !keys.just_pressed(KeyCode::KeyE) {
+        return;
+    }
+    // Reset the per-press arbitration latch (set below only on the leave path).
+    gun_left.0 = false;
+    // Leave the gun we're crewing (consume the press so no other seat boards on it).
+    if gunner.0.is_some() {
+        gunner.0 = None;
+        // Latch the press so `vehicle_activate` (runs after us) won't grab the wheel
+        // on this same tap — the gun and driver reaches overlap, so stepping off the
+        // cannon must not drop us straight into driving.
+        gun_left.0 = true;
+        notify.write(Notify::new("Left the gun"));
+        return;
+    }
+    // Don't crew the gun if this same E just mounted an Ogre, or if we're driving —
+    // those seats own the press, and driving + gunning the same truck is excluded.
+    if mount.0.is_some() || vehicle.0.is_some() {
+        return;
+    }
+    let Ok(ptf) = q_player.single() else { return };
+    for (e, vtf, v) in &q_veh {
+        // Same deck/near test as `vehicle_activate`, pointed at the pintle instead of
+        // the wheel. The pintle Y is irrelevant here — `near` is a planar X/Z reach.
+        let on_deck = ride(ptf.translation, PLAYER_HALF[1], vtf.translation, v.yaw, Vec3::ZERO, 0.0, v.half_w, v.half_l, v.body_h).is_some();
+        let pintle = vtf.translation + Quat::from_rotation_y(v.yaw) * v.gun_local;
+        let near = (ptf.translation.x - pintle.x).hypot(ptf.translation.z - pintle.z) < GUN_REACH;
+        if on_deck && near {
+            gunner.0 = Some(e);
+            notify.write(Notify::new("On the cannon — LMB fire, mouse to aim, E to leave"));
+            sfx.write(Sfx::pitched(Sound::MetallicTing, pintle, 0.7)); // racking the breech
+            break;
+        }
+    }
+}
+
+/// Fire the pintle cannon: holding **left mouse** on a slow cycle launches a heavy,
+/// high-knockback shell from the pintle's WORLD muzzle (deck transform × `gun_local`
+/// + a barrel offset, so it rides every truck translation and yaw) travelling along
+/// the GUNNER'S camera aim — independent of the truck's heading. Feeds the standard
+/// projectile/explosion path (`spawn_cannon_shell`) plus a muzzle flash + dynamic
+/// light, screen shake and the cannon report. The truck coasts while you gun (it's
+/// no longer the `ActiveVehicle`, so `vehicle_drive` just decelerates it).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gun_fire(
+    time: Res<Time>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    gunner: Res<ActiveGunner>,
+    gfx: Res<GfxAssets>,
+    mut commands: Commands,
+    // Cooldown survives across frames in a Local so the heavy cycle is enforced even
+    // as you re-press; reset implicitly to 0 the moment you leave (next mount fires).
+    mut cooldown: Local<f32>,
+    q_player: Query<Entity, With<Player>>,
+    cam: Query<&GlobalTransform, With<crate::player::PlayerCamera>>,
+    q_veh: Query<(&Transform, &Vehicle)>,
+    mut sfx: MessageWriter<Sfx>,
+    mut shake: MessageWriter<ScreenShake>,
+) {
+    let dt = time.delta_secs();
+    *cooldown = (*cooldown - dt).max(0.0);
+    let Some(ve) = gunner.0 else { return };
+    if !mouse.pressed(MouseButton::Left) || *cooldown > 0.0 {
+        return;
+    }
+    let Ok((vtf, v)) = q_veh.get(ve) else { return };
+    let Ok(cam_gt) = cam.single() else { return };
+    let Ok(pe) = q_player.single() else { return };
+
+    let aim = cam_gt.forward().as_vec3();
+    let muzzle = cannon_muzzle(vtf.translation, v.yaw, v.gun_local, aim, GUN_BARREL);
+
+    *cooldown = GUN_COOLDOWN;
+    crate::projectiles::spawn_cannon_shell(&mut commands, &gfx, muzzle, aim, pe);
+    crate::effects::spawn_muzzle_flash(&mut commands, &gfx, muzzle);
+    sfx.write(Sfx::pitched(Sound::RocketFire, muzzle, 0.7)); // deeper/heavier than a rocket
+    shake.write(ScreenShake { amount: 0.3 });
 }
 
 /// Integrate every vehicle's *free* motion and rewrite its collider slot. Only the
@@ -702,15 +901,18 @@ fn vehicle_audio(
     }
 }
 
-/// On leaving `Playing` (death/victory/level change): clear the driving handle so
-/// a fresh level never starts in a phantom truck, and despawn the looping engine/
-/// tyre sounds so they don't drone on over the death/victory screen.
+/// On leaving `Playing` (death/victory/level change): clear the driving AND gunning
+/// handles so a fresh level never starts in a phantom truck or crewing the cannon,
+/// and despawn the looping engine/tyre sounds so they don't drone on over the
+/// death/victory screen.
 fn cleanup_vehicle_audio(
     mut active: ResMut<ActiveVehicle>,
+    mut gunner: ResMut<ActiveGunner>,
     mut commands: Commands,
     loops: Query<Entity, Or<(With<EngineSound>, With<TireSound>)>>,
 ) {
     active.0 = None;
+    gunner.0 = None;
     for e in &loops {
         commands.entity(e).despawn();
     }
@@ -764,6 +966,43 @@ mod tests {
         assert_eq!(impact, 0.0);
         assert_eq!(dyaw, 0.0);
         assert!((out - drive).length() < 1e-6);
+    }
+
+    // --- pintle cannon muzzle transform (gun_fire) -------------------------
+    /// The muzzle is the deck transform applied to the local pintle offset, then
+    /// pushed along the aim: at the origin, yaw 0, aiming straight forward (-Z),
+    /// it sits at the pintle's X/Z with the barrel length subtracted from Z.
+    #[test]
+    fn muzzle_at_origin_rides_the_aim() {
+        let aim = Vec3::new(0.0, 0.0, -1.0); // looking forward
+        let m = cannon_muzzle(Vec3::ZERO, 0.0, GUN_LOCAL, aim, GUN_BARREL);
+        assert!((m.x - GUN_LOCAL.x).abs() < 1e-5);
+        assert!((m.y - GUN_LOCAL.y).abs() < 1e-5);
+        assert!((m.z - (GUN_LOCAL.z - GUN_BARREL)).abs() < 1e-5, "barrel pushes the muzzle along -Z aim, got {}", m.z);
+    }
+
+    /// The muzzle rides the truck's TRANSLATION: shift the deck and the muzzle
+    /// shifts with it one-for-one (so it tracks a moving/coasting bed).
+    #[test]
+    fn muzzle_rides_truck_translation() {
+        let aim = Vec3::new(0.0, 0.0, -1.0);
+        let base = cannon_muzzle(Vec3::ZERO, 0.0, GUN_LOCAL, aim, GUN_BARREL);
+        let moved = cannon_muzzle(Vec3::new(5.0, 0.0, -3.0), 0.0, GUN_LOCAL, aim, GUN_BARREL);
+        assert!((moved - base - Vec3::new(5.0, 0.0, -3.0)).length() < 1e-5);
+    }
+
+    /// The muzzle rides the truck's YAW: yawing the deck +90° rotates the local
+    /// pintle offset about +Y (local +Z → world +X), independent of the aim push.
+    #[test]
+    fn muzzle_rides_truck_yaw() {
+        // Aim straight up so the barrel push is orthogonal to the planar pintle,
+        // isolating the yaw-rotated pintle offset in X/Z.
+        let aim = Vec3::Y;
+        let m = cannon_muzzle(Vec3::ZERO, FRAC_PI_2, GUN_LOCAL, aim, GUN_BARREL);
+        // rot_y(+90°): (x,z) -> (z, -x). GUN_LOCAL has x=0, z=1.7 → world x≈1.7, z≈0.
+        assert!((m.x - GUN_LOCAL.z).abs() < 1e-5, "local +Z swings to world +X under +90° yaw, got {}", m.x);
+        assert!(m.z.abs() < 1e-5, "local +Z no longer projects onto world Z, got {}", m.z);
+        assert!((m.y - (GUN_LOCAL.y + GUN_BARREL)).abs() < 1e-5, "the up-aim barrel push lands on Y, got {}", m.y);
     }
 
     // --- ram overlap (vehicle_ram) -----------------------------------------

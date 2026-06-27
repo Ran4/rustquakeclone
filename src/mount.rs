@@ -209,10 +209,11 @@ fn apply_whip_stagger(
 /// `ActiveVehicle` is `None`, and `vehicle_activate` only mounts when the player
 /// is on a truck deck — so a single tap can't both mount and toggle a truck.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-fn mount_activate(
+pub(crate) fn mount_activate(
     keys: Res<ButtonInput<KeyCode>>,
     mut active: ResMut<ActiveMount>,
     vehicle: Res<crate::vehicle::ActiveVehicle>,
+    gunner: Res<crate::vehicle::ActiveGunner>,
     mut commands: Commands,
     q_player: Query<&Transform, With<Player>>,
     q_ogre: Query<(Entity, &Transform), (With<Mountable>, With<Enemy>, Without<Dying>, Without<crate::enemies::PinnedCorpse>)>,
@@ -229,8 +230,9 @@ fn mount_activate(
         notify.write(Notify::new("Dismounted"));
         return;
     }
-    // Don't grab the wheel of an Ogre while driving a truck (let vehicle own E).
-    if vehicle.0.is_some() {
+    // Don't grab the wheel of an Ogre while driving OR crewing the gun on a truck
+    // (let the vehicle/gun seats own E — distinct, mutually exclusive seats).
+    if vehicle.0.is_some() || gunner.0.is_some() {
         return;
     }
     let Ok(ptf) = q_player.single() else { return };
