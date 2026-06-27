@@ -10,7 +10,14 @@ impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (handle_explosions, apply_damage, crate::monster_model::do_sever, check_deaths)
+            (
+                handle_explosions,
+                apply_damage,
+                crate::monster_model::do_sever,
+                // After `apply_pins` (feature 41) so a one-hit pin+kill sees `Pinned`
+                // committed and takes the wall-décor fork rather than the topple path.
+                check_deaths.after(crate::enemies::apply_pins),
+            )
                 .chain()
                 .run_if(in_state(GameState::Playing)),
         );
@@ -239,6 +246,7 @@ fn apply_damage(
 fn check_deaths(
     mut commands: Commands,
     mut q: Query<(Entity, &mut Health, &Faction, &GlobalTransform, &Transform)>,
+    pinned: Query<(), With<crate::enemies::Pinned>>,
     mut sfx: MessageWriter<Sfx>,
     mut next: ResMut<NextState<GameState>>,
     mut mission: ResMut<Mission>,
@@ -258,6 +266,17 @@ fn check_deaths(
             Faction::Monster => {
                 sfx.write(Sfx::at(Sound::EnemyDeath, pos));
                 mission.kills += 1;
+                // Pinned death (feature 41): a monster killed while staked to a wall
+                // stays there as grisly décor — it does NOT run the topple/ragdoll.
+                // `PinnedCorpse` freezes the rig and drops it from the live AI; we
+                // keep the `Pinned` component so the held pose (lean) stays put. This
+                // is also what "cook a pinned monster in lava" lands on — the hazard
+                // DoT finishes it and the body is left baking on the wall.
+                if pinned.contains(e) {
+                    spawn_gibs(&mut commands, &gfx, pos, 4);
+                    commands.entity(e).insert(crate::enemies::PinnedCorpse);
+                    continue;
+                }
                 let overkill = hp.current < -25.0; // rockets / big hits gib
                 if overkill {
                     // Blown apart: the whole body explodes into gibs.

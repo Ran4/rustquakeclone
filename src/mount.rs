@@ -215,7 +215,7 @@ fn mount_activate(
     vehicle: Res<crate::vehicle::ActiveVehicle>,
     mut commands: Commands,
     q_player: Query<&Transform, With<Player>>,
-    q_ogre: Query<(Entity, &Transform), (With<Mountable>, With<Enemy>, Without<Dying>)>,
+    q_ogre: Query<(Entity, &Transform), (With<Mountable>, With<Enemy>, Without<Dying>, Without<crate::enemies::PinnedCorpse>)>,
     mut notify: MessageWriter<Notify>,
     mut sfx: MessageWriter<Sfx>,
 ) {

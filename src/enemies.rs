@@ -69,7 +69,13 @@ impl Plugin for EnemiesPlugin {
             )
             .add_systems(
                 Update,
-                (enemy_hit_flash, key_ambush).run_if(in_state(GameState::Playing)),
+                // `apply_pins` runs AFTER `projectile_move` (which writes the PinEvent)
+                // and is ordered BEFORE combat's `check_deaths` (see CombatPlugin). Those
+                // two edges force sync points, so a single nail that both pins AND kills
+                // a monster in one frame has `Pinned` committed and visible when the death
+                // forks to the wall-décor path instead of the normal topple/ragdoll.
+                (enemy_hit_flash, key_ambush, apply_pins.after(crate::projectiles::projectile_move))
+                    .run_if(in_state(GameState::Playing)),
             );
     }
 }
@@ -172,6 +178,37 @@ fn enemy_hit_flash(
     }
 }
 
+/// Consume `PinEvent`s (feature 41): stake the target monster to the surface the
+/// nail drove it against. Sets the `Pinned` state (or REFRESHES/EXTENDS it
+/// additively, capped at `PIN_MAX`, when re-pinned) and snaps the rig flush to the
+/// anchor. Wakes the monster so it chases the instant the root frees. Dead bodies
+/// (a pinned corpse) are skipped — they're already wall décor.
+pub(crate) fn apply_pins(
+    mut commands: Commands,
+    mut ev: MessageReader<PinEvent>,
+    mut q: Query<(&mut Transform, &mut Enemy, Option<&mut Pinned>, &Health), Without<PinnedCorpse>>,
+) {
+    for p in ev.read() {
+        let Ok((mut tf, mut en, existing, hp)) = q.get_mut(p.target) else { continue };
+        if hp.dead {
+            continue;
+        }
+        if let Some(mut pin) = existing {
+            // Re-pin: additive refresh, capped so it always still counts down to 0.
+            pin.until = (pin.until + p.dur).min(tune::PIN_MAX);
+            pin.normal = p.normal;
+            pin.anchor = p.anchor;
+        } else {
+            commands.entity(p.target).insert(Pinned { until: p.dur.min(tune::PIN_MAX), normal: p.normal, anchor: p.anchor });
+        }
+        // Snap flush to the surface and drop any momentum so it doesn't drift.
+        tf.translation = p.anchor;
+        en.vel = Vec3::ZERO;
+        en.awake = true;
+        en.state = AiState::Chase;
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AiState {
     Idle,
@@ -214,6 +251,27 @@ pub struct Enemy {
     /// pass-through deals a single hit, not one per frame of overlap).
     pub ram_cd: f32,
 }
+
+/// Nail-pin state (feature 41): a monster staked to a surface. While present the
+/// AI is fully rooted — movement zeroed, Chase/Attack overridden — but the monster
+/// is still alive and takes damage normally. `until` ALWAYS counts down to 0 and
+/// the component is removed, so the AI can never deadlock; a fresh nail refreshes
+/// it (capped at `PIN_MAX`). `anchor` is the snapped body centre it's held at.
+#[derive(Component)]
+pub struct Pinned {
+    /// Seconds of root left (counts down in `enemy_ai`; <=0 => component removed).
+    pub until: f32,
+    /// Surface normal of the wall it's pinned to (points back toward the monster).
+    pub normal: Vec3,
+    /// Snapped body-centre position the rig is held flush at.
+    pub anchor: Vec3,
+}
+
+/// A monster that DIED while pinned (feature 41): it stays staked to the surface as
+/// grisly wall décor instead of toppling into a ragdoll. The marker freezes the rig
+/// (`animate_monsters` leaves its bones be) and excludes it from the live AI.
+#[derive(Component)]
+pub struct PinnedCorpse;
 
 struct MStats {
     health: f32,
@@ -345,7 +403,7 @@ struct SquadMember {
 fn assign_squad_roles(
     colliders: Res<WorldColliders>,
     q_player: Query<(&Transform, &Player)>,
-    q_mon: Query<(Entity, &Transform, &Enemy), (Without<Player>, Without<Dying>, Without<crate::mount::Mounted>)>,
+    q_mon: Query<(Entity, &Transform, &Enemy), (Without<Player>, Without<Dying>, Without<PinnedCorpse>, Without<crate::mount::Mounted>)>,
     mut blackboard: ResMut<SquadBlackboard>,
 ) {
     let Ok((player_tf, player)) = q_player.single() else {
@@ -580,7 +638,7 @@ fn enemy_ai(
     blackboard: Res<SquadBlackboard>,
     mut commands: Commands,
     mut rng_state: Local<u32>,
-    mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Knockback, Option<&Crippled>), (Without<Player>, Without<Dying>, Without<crate::mount::Mounted>)>,
+    mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Knockback, Option<&Crippled>, Option<&mut Pinned>), (Without<Player>, Without<Dying>, Without<PinnedCorpse>, Without<crate::mount::Mounted>)>,
     q_player: Query<(Entity, &Transform, &Player)>,
     mut dmg: MessageWriter<DamageEvent>,
     mut sfx: MessageWriter<Sfx>,
@@ -607,7 +665,7 @@ fn enemy_ai(
         x as f32 / u32::MAX as f32
     };
 
-    for (e, mut tf, mut en, mut kb, crippled) in &mut q {
+    for (e, mut tf, mut en, mut kb, crippled, pinned) in &mut q {
         en.attack_cd = (en.attack_cd - dt).max(0.0);
         en.pain = (en.pain - dt).max(0.0);
         en.pain_cd = (en.pain_cd - dt).max(0.0);
@@ -634,6 +692,31 @@ fn enemy_ai(
         if kb.0 != Vec3::ZERO {
             en.vel += kb.0;
             kb.0 = Vec3::ZERO;
+        }
+
+        // Pinned (feature 41): staked to a surface. The timer ALWAYS counts down to
+        // 0 and frees it (never re-armed here — only `apply_pins` extends it), so the
+        // AI can't deadlock even if the anchor brush moves or vanishes. While rooted
+        // we hold it flush at the anchor, drop any banked knockback (don't let a blast
+        // fling it off the stake), and skip the rest of the AI so it can't move or
+        // attack — but keep `pain` topped up so the rig keeps twitching against the
+        // wall (it reads as struggling, not frozen).
+        if let Some(mut pin) = pinned {
+            pin.until -= dt;
+            if pin.until <= 0.0 {
+                commands.entity(e).remove::<Pinned>();
+            } else {
+                tf.translation = pin.anchor;
+                en.vel = Vec3::ZERO;
+                kb.0 = Vec3::ZERO;
+                // Drive an actual oscillation (not a constant lean) so the rig visibly
+                // thrashes to tear free. `pain` feeds the animator's torso lean, so a
+                // fast sine on it reads as a struggle; the per-entity phase (`bob`)
+                // keeps a clump of pinned bodies from twitching in lockstep.
+                en.pain = (0.10 + 0.06 * (now * 13.0 + en.bob).sin()).max(0.0);
+                en.windup = 0.0; // never resolve a telegraphed shot while staked
+                continue;
+            }
         }
 
         // Wake up when the player is seen.

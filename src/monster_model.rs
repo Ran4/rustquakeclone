@@ -23,7 +23,7 @@ use crate::common::{
     *,
 };
 use crate::effects::{spawn_blood, spawn_gibs};
-use crate::enemies::{kind_pitch, Enemy};
+use crate::enemies::{kind_pitch, Enemy, PinnedCorpse};
 use crate::level::MonsterKind;
 use crate::physics::{ray_aabb, Aabb};
 use crate::player::PlayerCamera;
@@ -719,16 +719,21 @@ pub fn build_monster_visual(
 // ----------------------------------------------------------------------------
 fn animate_monsters(
     time: Res<Time>,
-    q_owner: Query<(&Enemy, Option<&Dying>, Has<crate::corpse::Ragdoll>)>,
+    q_owner: Query<(&Enemy, Option<&Dying>, Has<crate::corpse::Ragdoll>, Has<PinnedCorpse>)>,
     mut q_bone: Query<(&Bone, &mut Transform), Without<Severed>>,
 ) {
     let t = time.elapsed_secs();
     for (bone, mut tf) in &mut q_bone {
-        let Ok((en, dying, ragdolling)) = q_owner.get(bone.owner) else {
+        let Ok((en, dying, ragdolling, pinned_corpse)) = q_owner.get(bone.owner) else {
             continue;
         };
         // A ragdolling corpse owns its bones in `corpse::ragdoll_solve` — leave them be.
         if ragdolling {
+            continue;
+        }
+        // A pinned corpse (feature 41) is frozen mid-struggle on the wall — leave its
+        // bones exactly where the last live frame left them (grisly wall décor).
+        if pinned_corpse {
             continue;
         }
         // Dying but not yet ragdolled (the build trails the kill by a frame): relax to

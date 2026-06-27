@@ -119,6 +119,7 @@ fn main() {
         .add_message::<ExplosionEvent>()
         .add_message::<SeverEvent>()
         .add_message::<ImpactEvent>()
+        .add_message::<PinEvent>()
         .add_message::<BrushStrike>()
         .add_message::<Sfx>()
         .add_message::<ScreenShake>()

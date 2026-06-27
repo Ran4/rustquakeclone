@@ -90,16 +90,37 @@ fn door_system(
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn lava_damage(
     time: Res<Time>,
     lava: Res<LavaVolumes>,
     style: Res<LevelStyle>,
     q_player: Query<(Entity, &Transform), With<Player>>,
+    q_monsters: Query<(Entity, &Transform, &Hurtbox), (With<crate::enemies::Enemy>, Without<crate::monster_model::Dying>, Without<crate::enemies::PinnedCorpse>, Without<Player>)>,
     mut dmg: MessageWriter<DamageEvent>,
     mut flash: MessageWriter<ScreenFlash>,
     mut acc: Local<f32>,
+    mut macc: Local<f32>,
 ) {
     let dt = time.delta_secs();
+
+    // Monsters cook in the same hazard (feature 41): a monster whose body overlaps a
+    // lava volume takes the same 0.3s tick the player does — this is what lets a nail-
+    // pinned (or shoved) monster bake in the lava. In practice living monsters rarely
+    // overlap the volume (they stand on floor brushes whose surface sits above it), so
+    // it's usually a no-op; a dead pinned corpse is excluded outright so it can't spam
+    // no-op DoT events on its already-dead Health. The player tick below is unchanged.
+    *macc += dt;
+    if *macc >= 0.3 {
+        *macc = 0.0;
+        for (me, mtf, mhb) in &q_monsters {
+            let mbox = Aabb::from_center_half(mtf.translation, mhb.half);
+            if lava.volumes.iter().any(|v| v.overlaps(&mbox)) {
+                dmg.write(DamageEvent::body(me, style.hazard_dot, None, Vec3::Y * 3.5));
+            }
+        }
+    }
+
     let Ok((pe, ptf)) = q_player.single() else { return };
 
     // Fell into the bottomless void (e.g. level 3's foundry shaft): die the

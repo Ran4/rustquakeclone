@@ -263,6 +263,23 @@ pub mod tune {
     /// perfect-parried bolt drops a Scrag/Enforcer in two), still gated by the ~21%
     /// shield uptime and the requirement to aim back at the shooter.
     pub const PARRY_PERFECT_DAMAGE: f32 = 3.0;
+
+    // --- Nail pin / stake-them-to-the-wall (feature 41) ----------------------
+    // A player nail that strikes a monster sandwiched against world geometry
+    // drives through and STAKES it there: it roots the monster for a few seconds
+    // (movement zeroed, Chase/Attack overridden) while it twitches to tear free.
+    /// Extra reach (m) the pin probe casts PAST the monster's body half-width
+    /// along the nail's travel. This is also the slam distance: a nail that
+    /// catches a monster merely *near* a surface (within this margin) slams it
+    /// the rest of the way flush. Kept short so a wall far behind never pins.
+    pub const PIN_REACH: f32 = 0.6;
+    /// Base pin duration (s) from a single nail. A few seconds — long enough to
+    /// reload, nudge it off a ledge, or cook it in lava.
+    pub const PIN_DURATION: f32 = 3.0;
+    /// Cap (s) on the accumulated pin timer: a 2nd/3rd nail REFRESHES/EXTENDS the
+    /// root (additive) but never past this, so a clump can be sewn down for good
+    /// without rooting anything literally forever (the timer always frees the AI).
+    pub const PIN_MAX: f32 = 6.0;
 }
 
 // ----------------------------------------------------------------------------
@@ -438,6 +455,19 @@ pub struct ExplosionEvent {
 /// A monster corpse left behind on death; fades out after the timer.
 #[derive(Component)]
 pub struct Corpse(pub f32);
+
+/// Stake a monster to a surface (feature 41). Emitted by `projectile_move` when a
+/// player nail strikes a monster sandwiched against world geometry; consumed by
+/// `enemies::apply_pins`, which sets/refreshes the `Pinned` state and snaps the
+/// rig flush to the wall. `anchor` is the snapped body centre to hold at; `normal`
+/// is the surface normal; `dur` is the seconds of root this nail grants.
+#[derive(Message)]
+pub struct PinEvent {
+    pub target: Entity,
+    pub normal: Vec3,
+    pub anchor: Vec3,
+    pub dur: f32,
+}
 
 /// Small visual hit decoration.
 #[derive(Message)]

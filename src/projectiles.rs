@@ -197,6 +197,32 @@ pub fn spawn_lodestone(commands: &mut Commands, gfx: &GfxAssets, pos: Vec3, dir:
         });
 }
 
+/// Pin test (feature 41): is a monster body (`center`, `half`) struck by a nail
+/// travelling `dir` sandwiched against world geometry? Probe `raycast_world` from
+/// the body centre along `dir` for the body's half-width along that axis plus a
+/// short margin (`PIN_REACH`). A hit within that reach is a PIN; returns the
+/// surface `(normal, anchor)` where `anchor` is the snapped body centre that
+/// presses the body's leading face flush to the wall (a hair off it along the
+/// normal). A wall farther than the reach (merely *behind* the monster) does NOT
+/// pin — that short reach is what keeps a corner/thin-brush probe honest.
+///
+/// Pure (no ECS) so it's unit-testable without a GPU.
+pub(crate) fn pin_against_wall(center: Vec3, half: Vec3, dir: Vec3, solids: &[Aabb]) -> Option<(Vec3, Vec3)> {
+    let dir = dir.normalize_or_zero();
+    if dir == Vec3::ZERO {
+        return None;
+    }
+    // The body's half-extent along the nail's travel axis (the AABB's support).
+    let half_along = half.x * dir.x.abs() + half.y * dir.y.abs() + half.z * dir.z.abs();
+    let reach = half_along + PIN_REACH;
+    let (dist, _pt, n) = raycast_world(center, dir, reach, solids)?;
+    // Slam the body forward so its leading face sits at the wall (clamped to >=0 so
+    // a body already flush isn't yanked backward), then nudge a hair off the surface.
+    let slam = (dist - half_along).max(0.0);
+    let anchor = center + dir * slam + n * 0.02;
+    Some((n, anchor))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn projectile_move(
     mut commands: Commands,
@@ -209,6 +235,7 @@ pub(crate) fn projectile_move(
     mut dmg: MessageWriter<DamageEvent>,
     mut expl: MessageWriter<ExplosionEvent>,
     mut impact: MessageWriter<ImpactEvent>,
+    mut pin: MessageWriter<PinEvent>,
     mut sfx: MessageWriter<Sfx>,
 ) {
     let dt = time.delta_secs();
@@ -439,6 +466,18 @@ pub(crate) fn projectile_move(
                     } else {
                         dmg.write(DamageEvent::body(te, p.damage, p.source, knock));
                     }
+                    // Stake-to-the-wall (feature 41): a PLAYER nail that catches a
+                    // monster sandwiched against world geometry along its travel
+                    // pins it there. Probe past the body from its centre; if a wall
+                    // is within a body-width + slam margin, fire a PinEvent (the
+                    // apply_pins system sets/refreshes the root and snaps it flush).
+                    if p.kind == ProjKind::Nail && p.from_player {
+                        if let Some(&(_, center, half)) = target_list.iter().find(|(e, _, _)| *e == te) {
+                            if let Some((normal, anchor)) = pin_against_wall(center, half, dir, &colliders.solids) {
+                                pin.write(PinEvent { target: te, normal, anchor, dur: PIN_DURATION });
+                            }
+                        }
+                    }
                     impact.write(ImpactEvent { pos: pt, normal: n, blood: true });
                 } else if let Some((pt, n)) = hit_world {
                     impact.write(ImpactEvent { pos: pt, normal: n, blood: false });
@@ -628,6 +667,49 @@ pub(crate) fn whip_parry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A monster flush against a wall along the nail's travel is PINNED: the probe
+    /// from its centre finds the wall within a body-width and returns a normal +
+    /// flush anchor.
+    #[test]
+    fn pin_against_a_flush_wall() {
+        let half = Vec3::new(0.4, 0.9, 0.4);
+        // Wall just past the monster's +X face (near face at x = 0.4 = half-width).
+        let wall = Aabb::from_center_half(Vec3::new(1.4, 0.0, 0.0), Vec3::new(1.0, 5.0, 5.0));
+        let got = pin_against_wall(Vec3::ZERO, half, Vec3::X, &[wall]);
+        let (n, anchor) = got.expect("flush monster should pin");
+        assert!(n.x < -0.5, "surface normal should face back toward the monster, got {n:?}");
+        // Already flush: barely slammed, anchor stays at the body (a hair off the wall).
+        assert!(anchor.x.abs() < 0.1, "flush body shouldn't be yanked, got {anchor:?}");
+    }
+
+    /// A nail catching a monster merely NEAR a surface still pins by slamming it the
+    /// rest of the way flush (the anchor moves forward toward the wall).
+    #[test]
+    fn pin_slams_a_monster_near_a_wall() {
+        let half = Vec3::new(0.4, 0.9, 0.4);
+        // Near face at x = 0.4 + 0.4 = 0.8 — within reach (half 0.4 + PIN_REACH 0.6 = 1.0).
+        let wall = Aabb::from_center_half(Vec3::new(1.8, 0.0, 0.0), Vec3::new(1.0, 5.0, 5.0));
+        let (_, anchor) = pin_against_wall(Vec3::ZERO, half, Vec3::X, &[wall]).expect("near monster should pin");
+        assert!(anchor.x > 0.3, "body should be slammed forward toward the wall, got {anchor:?}");
+    }
+
+    /// Open space (no solids) never pins.
+    #[test]
+    fn no_pin_in_open_space() {
+        let half = Vec3::new(0.4, 0.9, 0.4);
+        assert!(pin_against_wall(Vec3::ZERO, half, Vec3::X, &[]).is_none());
+    }
+
+    /// A wall well BEHIND the monster (past the short reach) does not pin — only a
+    /// surface the body is actually sandwiched against counts.
+    #[test]
+    fn no_pin_when_wall_is_far_behind() {
+        let half = Vec3::new(0.4, 0.9, 0.4);
+        // Near face at x = 2.0, far beyond reach (1.0).
+        let wall = Aabb::from_center_half(Vec3::new(3.0, 0.0, 0.0), Vec3::new(1.0, 5.0, 5.0));
+        assert!(pin_against_wall(Vec3::ZERO, half, Vec3::X, &[wall]).is_none());
+    }
 
     /// A bolt flying straight at the player (opposite the aim) is mirrored back out
     /// along the aim — it screams back toward the shooter, at the same speed on a
