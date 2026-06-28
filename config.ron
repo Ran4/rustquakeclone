@@ -20,4 +20,8 @@
     // alive per level. Past this the oldest is recycled so a long fight stays
     // cheap; 0 disables decals. Default 2000.
     decal_limit: 2000,
+
+    // God mode: take no damage at all — every hit, hazard and instant-death fall
+    // is ignored (knockback still applies, so rocket jumps still work). Default false.
+    invulnerable: false,
 )

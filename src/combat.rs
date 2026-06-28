@@ -132,6 +132,7 @@ fn apply_damage(
     mut enemies: Query<&mut crate::enemies::Enemy>,
     mut limbq: Query<&mut crate::monster_model::Limbs>,
     mount: Res<crate::mount::ActiveMount>,
+    invuln: Res<Invulnerable>,
     q_player: Query<Entity, With<crate::player::Player>>,
     mut sever_w: MessageWriter<SeverEvent>,
     mut sfx: MessageWriter<Sfx>,
@@ -167,6 +168,16 @@ fn apply_damage(
                 if let Some(mut k) = kb {
                     k.0 += ev.knockback;
                 }
+            }
+            continue;
+        }
+        // God mode (config.ron `invulnerable`): a player-targeted hit is a no-op.
+        // Only the knockback lands (so rocket jumps and shoves still move you) —
+        // damage, armor wear, pain and the hit-flash are all skipped. Gated on the
+        // resolved faction so a mounted Ogre soaking redirected hits still dies.
+        if invuln.0 && matches!(faction, Some(Faction::Player)) {
+            if let Some(mut k) = kb {
+                k.0 += ev.knockback;
             }
             continue;
         }

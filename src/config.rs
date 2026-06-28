@@ -23,6 +23,10 @@ pub struct Config {
     /// recycled, so a marathon fight stays O(cap) and can't tank the frame rate by
     /// unbounded growth. `0` disables decals entirely. Default `2000`.
     pub decal_limit: usize,
+    /// God mode: when `true` the player takes no damage at all — every hit, hazard
+    /// and instant-death fall is ignored (knockback still applies, so rocket jumps
+    /// and shoves still move you). Default `false`.
+    pub invulnerable: bool,
 }
 
 impl Default for Config {
@@ -34,6 +38,7 @@ impl Default for Config {
             vsync: true,
             start_level: StartLevel::default(),
             decal_limit: 2000,
+            invulnerable: false,
         }
     }
 }

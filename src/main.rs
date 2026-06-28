@@ -109,6 +109,8 @@ fn main() {
             config::StartLevel::Random => None,
             config::StartLevel::Fixed(n) => Some(n.saturating_sub(1).min(NUM_LEVELS - 1)),
         }))
+        // god mode (config.ron `invulnerable`): the player takes no damage
+        .insert_resource(Invulnerable(cfg.invulnerable))
         // shared resources
         .init_resource::<WorldColliders>()
         .init_resource::<GfxAssets>()

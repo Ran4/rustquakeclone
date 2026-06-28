@@ -28,6 +28,7 @@ startup (omit any field to keep its default):
     height: 720,
     vsync: true,        // false → uncap the frame rate (watch the fps meter, top-left)
     start_level: 1,         // 1–8 to always start on that level (default 1), "random" for a random one each run
+    invulnerable: false,    // true → god mode: the player takes no damage (knockback still applies)
 )
 ```
 

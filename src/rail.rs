@@ -189,6 +189,73 @@ fn wrap_angle(a: f32) -> f32 {
     a
 }
 
+/// Default fillet radius (m) and segment count for rounding an authored rail's
+/// corners — used by [`spawn_cart`] (the cart path) and [`crate::level::Build::rail`]
+/// (the visible cross-ties), so both follow the same rounded curve.
+pub(crate) const CORNER_R: f32 = 2.5;
+pub(crate) const CORNER_SEGS: usize = 6;
+
+/// Round the hard corners of an authored rail polyline into short quadratic-Bezier
+/// fillets, so the cart sweeps THROUGH a turn instead of snapping at the kink.
+///
+/// Why it matters beyond looks: [`rail_follow`] commits arc-length by projecting the
+/// body's *actual* swept motion onto the local tangent. At a sharp vertex the cart's
+/// momentum still points along the OLD edge while the tangent has snapped to the new
+/// one, so that projection collapses toward zero, `s` stops advancing and the cart
+/// hangs at the corner ("the cart won't turn"). Each fillet replaces one big kink
+/// with a run of small-angle steps whose tangent barely differs from the motion, so
+/// `s` keeps advancing and the turn is taken smoothly.
+///
+/// The fillet at each interior vertex is tangent to both edges (the corner apex is
+/// the Bezier control point, so the path leaves along the incoming edge and enters
+/// along the outgoing one), trimmed back `min(radius, ½ each edge)` so it never
+/// overruns a short segment or collides with a neighbouring fillet. Endpoints and
+/// near-straight vertices are kept exactly (no needless density on long runs).
+///
+/// Returns the denser polyline plus, for each ORIGINAL vertex, the output index
+/// where that vertex's geometry begins (its fillet start, or the vertex itself when
+/// kept) — lets callers map an authored node (a junction/derail marker, the
+/// branch-divergence point) back onto the rounded line.
+pub(crate) fn round_corners(track: &[Vec3], radius: f32, segs: usize) -> (Vec<Vec3>, Vec<usize>) {
+    let n = track.len();
+    if n < 3 || segs == 0 {
+        return (track.to_vec(), (0..n).collect());
+    }
+    let mut out: Vec<Vec3> = Vec::with_capacity(n + (n - 2) * (segs + 1));
+    let mut starts = vec![0usize; n];
+    out.push(track[0]);
+    for i in 1..n - 1 {
+        starts[i] = out.len();
+        let din = track[i] - track[i - 1];
+        let dout = track[i + 1] - track[i];
+        let (lin, lout) = (din.length(), dout.length());
+        if lin < 1e-4 || lout < 1e-4 {
+            out.push(track[i]); // degenerate edge — nothing to round
+            continue;
+        }
+        let din = din / lin;
+        let dout = dout / lout;
+        // Near-straight: keep the exact vertex (sparse on long runs, and preserves
+        // authored junction/derail nodes that happen to be on a straight stretch).
+        if din.dot(dout) > 0.999 {
+            out.push(track[i]);
+            continue;
+        }
+        let t = radius.min(lin * 0.5).min(lout * 0.5);
+        let a = track[i] - din * t; // fillet start, on the incoming edge
+        let b = track[i] + dout * t; // fillet end, on the outgoing edge
+        for k in 0..=segs {
+            let u = k as f32 / segs as f32;
+            let omu = 1.0 - u;
+            // Quadratic Bezier A→B with the apex as control point.
+            out.push(a * (omu * omu) + track[i] * (2.0 * omu * u) + b * (u * u));
+        }
+    }
+    starts[n - 1] = out.len();
+    out.push(track[n - 1]);
+    (out, starts)
+}
+
 // ----------------------------------------------------------------------------
 // Spawning the cart model + reserving its collider slots
 // ----------------------------------------------------------------------------
@@ -209,15 +276,26 @@ pub fn spawn_cart(
     branch: Option<(usize, &[Vec3])>,
     derail_node: Option<usize>,
 ) -> Entity {
-    let track_a = track.to_vec();
+    // Round the authored corners into fillets so the cart sweeps through turns
+    // instead of stalling at a kink (see `round_corners`). `track` stays the raw
+    // authored polyline — used below only to place the shootable markers beside
+    // their original apex nodes.
+    let (track_a, starts_a) = round_corners(track, CORNER_R, CORNER_SEGS);
     let start = track_a.first().copied().unwrap_or(Vec3::ZERO);
 
-    // Build the branch line (shared head + branch tail) and the junction arc-length.
-    let (track_b, junction_s, switch_node) = match branch {
-        Some((j, tail)) if !tail.is_empty() && j < track_a.len() => {
-            let mut tb: Vec<Vec3> = track_a[..=j].to_vec();
-            tb.extend_from_slice(&tail[1..]); // tail[0] duplicates the junction node
-            (tb, polyline_len(&track_a[..=j]), Some(track_a[j]))
+    // Build the branch line (rounded shared head + rounded branch tail) and the
+    // junction arc-length: the last `s` at which BOTH lines still coincide, so
+    // throwing the switch there can never jump the cart. The shared straight head
+    // is rounded identically on both, so we take the earlier of the two fillet
+    // starts at the divergence node — the cart is on common ground until then.
+    let (track_b, junction_s, switch_j) = match branch {
+        Some((j, tail)) if !tail.is_empty() && j < track.len() => {
+            let mut full_b: Vec<Vec3> = track[..=j].to_vec();
+            full_b.extend_from_slice(&tail[1..]); // tail[0] duplicates the junction node
+            let (rb, starts_b) = round_corners(&full_b, CORNER_R, CORNER_SEGS);
+            let js_a = polyline_len(&track_a[..=starts_a[j]]);
+            let js_b = polyline_len(&rb[..=starts_b[j]]);
+            (rb, js_a.min(js_b), Some(j))
         }
         _ => (track_a.clone(), f32::INFINITY, None),
     };
@@ -230,9 +308,10 @@ pub fn spawn_cart(
     colliders.push(footprint_aabb(start, yaw, CART_HALF_W, CART_HALF_L, CART_BODY_H));
 
     // Shootable junction switch: a glowing lever box set just off the rail beside
-    // the junction node (clear of the cart's footprint so it never bumps it).
-    let switch_slot = switch_node.map(|node| {
-        let (_, tan) = sample_polyline(&track_a, junction_s);
+    // the authored junction node (clear of the cart's footprint so it never bumps it).
+    let switch_slot = switch_j.map(|j| {
+        let node = track[j];
+        let (_, tan) = sample_polyline(track, polyline_len(&track[..=j]));
         let perp = Vec3::new(tan.z, 0.0, -tan.x).try_normalize().unwrap_or(Vec3::X);
         let center = node + perp * (CART_HALF_W + 1.0) + Vec3::Y * 0.9;
         let slot = colliders.len();
@@ -241,10 +320,10 @@ pub fn spawn_cart(
         slot
     });
 
-    // Shootable weak rail joint: a red clamp box beside the derail node.
-    let derail_slot = derail_node.filter(|&n| n < track_a.len()).map(|n| {
-        let node = track_a[n];
-        let (_, tan) = sample_polyline(&track_a, polyline_len(&track_a[..=n]));
+    // Shootable weak rail joint: a red clamp box beside the authored derail node.
+    let derail_slot = derail_node.filter(|&n| n < track.len()).map(|n| {
+        let node = track[n];
+        let (_, tan) = sample_polyline(track, polyline_len(&track[..=n]));
         let perp = Vec3::new(tan.z, 0.0, -tan.x).try_normalize().unwrap_or(Vec3::X);
         let center = node + perp * (CART_HALF_W + 1.0) + Vec3::Y * 0.6;
         let slot = colliders.len();
@@ -583,5 +662,42 @@ mod tests {
     fn yaw_matches_the_forward_convention() {
         assert!(yaw_from_tangent(Vec3::NEG_Z).abs() < 1e-5);
         assert!((yaw_from_tangent(Vec3::X) + std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+    }
+
+    /// Rounding keeps the endpoints, softens the corner (the apex vertex is gone,
+    /// replaced by points strictly inside it) and never widens the turn past the
+    /// authored angle — every consecutive tangent step bends the same way, so the
+    /// follow's arc-length projection stays positive through the bend.
+    #[test]
+    fn rounding_softens_a_hard_corner() {
+        let track = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, -10.0), // hard 90° kink here
+            Vec3::new(10.0, 0.0, -10.0),
+        ];
+        let (out, starts) = round_corners(&track, 2.5, 6);
+        // Endpoints preserved exactly.
+        assert!(out[0].distance(track[0]) < 1e-5);
+        assert!(out[out.len() - 1].distance(track[2]) < 1e-5);
+        // The sharp apex is gone — no output point sits at the raw corner.
+        assert!(out.iter().all(|p| p.distance(track[1]) > 1e-3), "apex not rounded");
+        // The mapped fillet start for the corner vertex lands on the incoming edge,
+        // trimmed back ~radius from the apex (so a junction throw there is seamless).
+        let a = out[starts[1]];
+        assert!((a.z + 7.5).abs() < 1e-3 && a.x.abs() < 1e-3, "fillet start {a:?}");
+        // Consecutive segments only ever turn one way (no overshoot/wobble): the
+        // signed cross-product (in the XZ plane) keeps a single sign across the bend.
+        let mut sign = 0.0f32;
+        for w in out.windows(2).collect::<Vec<_>>().windows(2) {
+            let d0 = (w[0][1] - w[0][0]).normalize_or_zero();
+            let d1 = (w[1][1] - w[1][0]).normalize_or_zero();
+            let cross = d0.x * d1.z - d0.z * d1.x;
+            if cross.abs() > 1e-4 {
+                if sign == 0.0 {
+                    sign = cross.signum();
+                }
+                assert!(cross.signum() == sign, "turn reverses: {cross}");
+            }
+        }
     }
 }

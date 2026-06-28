@@ -872,6 +872,20 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
         self.visual(min, max, mat);
     }
 
+    /// A decorative box (visual only) of half-extents `half`, centered at `center`
+    /// and rotated `yaw` about +Y — for props that must align to a heading rather
+    /// than the world axes (a rail tie laid square across a curving track). The box
+    /// mesh is built local (centered at origin) so the rotation pivots on its centre.
+    pub fn deco_yaw(&mut self, center: Vec3, half: Vec3, yaw: f32, mat: Handle<StandardMaterial>) {
+        let mesh = self.meshes.add(box_mesh(-half, half));
+        self.commands.spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(mat),
+            Transform::from_translation(center).with_rotation(Quat::from_rotation_y(yaw)),
+            LevelEntity,
+        ));
+    }
+
     /// A decorative brush parented to `parent` (visual only). World coordinates as
     /// usual; the transform is rebased to the parent's center so it sits where you
     /// asked but inherits the parent's visibility — used to pin a telegraph deco
@@ -1152,9 +1166,20 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
             track, branch, derail_node,
         );
         self.sync_floor_mats(); // the cart reserved raw collider slots — tag them Normal
-        self.rail_ties(track);
-        if let Some((_, tail)) = branch {
-            self.rail_ties(tail);
+        // Lay the visible ties along the SAME rounded curve the cart follows (the
+        // cart rounds the authored corners — see `crate::rail::round_corners`).
+        use crate::rail::{round_corners, CORNER_R, CORNER_SEGS};
+        let (ra, _) = round_corners(track, CORNER_R, CORNER_SEGS);
+        self.rail_ties(&ra);
+        if let Some((j, tail)) = branch {
+            // Tie only the branch tail: the shared head is already tied along `ra`.
+            // Round the head+tail together so the junction bend curves, then start
+            // the ties at that bend's fillet (its output index in the rounded line).
+            let mut full_b: Vec<Vec3> = track[..=j.min(track.len().saturating_sub(1))].to_vec();
+            full_b.extend_from_slice(&tail[1..]);
+            let (rb, starts) = round_corners(&full_b, CORNER_R, CORNER_SEGS);
+            let from = starts.get(j).copied().unwrap_or(0).min(rb.len().saturating_sub(1));
+            self.rail_ties(&rb[from..]);
         }
     }
 
@@ -1174,16 +1199,19 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
                 continue;
             }
             let dir = seg / l;
+            // Yaw that lays the tie SQUARE across the rail: its long (local-X) axis
+            // runs perpendicular to the planar track heading, thin (local-Z) along
+            // it — the same -Z-forward convention the cart uses, so ties and cart
+            // agree. Without this every tie stayed world-X aligned and a diagonal or
+            // curving stretch read as a crooked staircase of offset blocks.
+            let yaw = (-dir.x).atan2(-dir.z);
+            // Half-extents of one crosstie, sunk just below the cart's ground line
+            // (deco, no collision — it never blocks the cart or a rider).
+            let half = Vec3::new(0.9, 0.08, 0.16);
             let mut d = 0.0;
             while d < l {
                 let p = a + dir * d;
-                // A short axis-aligned crosstie sunk just below the cart's ground
-                // point (deco, no collision — it never blocks the cart or a rider).
-                self.deco(
-                    Vec3::new(p.x - 0.9, p.y - 0.22, p.z - 0.16),
-                    Vec3::new(p.x + 0.9, p.y - 0.06, p.z + 0.16),
-                    mat.clone(),
-                );
+                self.deco_yaw(Vec3::new(p.x, p.y - 0.14, p.z), half, yaw, mat.clone());
                 d += SPACING;
             }
         }

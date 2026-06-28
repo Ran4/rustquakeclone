@@ -3,9 +3,9 @@
 ALWAYS implement these one at a time. When implemented, move them to the "Features already implemented"
 section below.
 
-(none currently queued)
+57 (darkroom — headless capture for the QC_* screenshot modes: invisible window + muted audio, real GPU-rendered PNGs, no popup/no noise)
 
-### Features already implemented
+### Features already implemented are found by doing `ls features/implemented`
 
 55 (carnage stains — persistent pooled blood/scorch/pellet-pock/drag-smear decals, themed, configurable cap default 2000)
 47 (material floors — per-brush ice/tar/conveyor that rewrites grounded movement, themed per level; bunny-hop/air-strafe untouched)

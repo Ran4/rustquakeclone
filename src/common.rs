@@ -816,6 +816,13 @@ impl Default for RunState {
 #[derive(Resource, Clone, Copy, Default)]
 pub struct StartLevelConfig(pub Option<usize>);
 
+/// God mode, read from `config.ron` (`invulnerable: true`) at startup. When set,
+/// `apply_damage` drops the damage from any player-targeted hit before it touches
+/// the player's `Health` — every wound, hazard tick and instant-death fall is a
+/// no-op. Knockback is left untouched so rocket jumps and shoves still move you.
+#[derive(Resource, Clone, Copy, Default)]
+pub struct Invulnerable(pub bool);
+
 /// Per-theme decal colours for the carnage ledger (feature 55): the tint of blood
 /// pools/splats, rocket scorch rings and pellet pocks. Derived from the active
 /// theme so gore reads rust-red on Frostspire's blue ice but green ichor in the
