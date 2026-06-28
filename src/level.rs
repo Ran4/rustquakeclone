@@ -569,13 +569,13 @@ fn theme_spec(id: ThemeId) -> ThemeSpec {
         // warm-grey grime and the orange glow of ore-veins/lanterns in the dark.
         Mine => ThemeSpec {
             dir: "textures/world/tomb",
-            tint: rgb(0.5, 0.44, 0.36),
+            tint: rgb(0.66, 0.58, 0.48),
             hazard_emissive: LinearRgba::rgb(3.0, 1.0, 0.2),
             hazard_rough: 0.7,
             accent: (rgb(1.0, 0.6, 0.25), LinearRgba::rgb(3.0, 1.2, 0.3)),
-            fog: (rgb(0.07, 0.06, 0.05), 14.0, 72.0),
-            ambient: (rgb(0.4, 0.34, 0.28), 160.0),
-            clear: rgb(0.02, 0.02, 0.02),
+            fog: (rgb(0.1, 0.09, 0.08), 16.0, 82.0),
+            ambient: (rgb(0.48, 0.42, 0.36), 300.0),
+            clear: rgb(0.03, 0.03, 0.03),
             hazard_dot: 12.0,
             hazard_flash: rgb(0.9, 0.4, 0.1),
             // Rock: a low gritty thud grinding up to a dusty crack.

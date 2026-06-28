@@ -71,6 +71,11 @@ const LODESTONE_PULL_ACCEL: f32 = 45.0;
 /// Inward acceleration on loose projectiles / enemy bolts (m/s; scaled by dt).
 const PROJ_PULL_ACCEL: f32 = 30.0;
 
+/// Upward velocity (m/s) added to a fired grenade on top of its aim direction —
+/// Quake's `velocity_z` lob. Makes grenades arc up out of the lower frame rather
+/// than skimming straight along the crosshair into your view.
+const GRENADE_LOB: f32 = 4.5;
+
 #[derive(Component)]
 pub struct Projectile {
     pub vel: Vec3,
@@ -137,12 +142,14 @@ pub fn spawn_projectile(
         ProjKind::Nail => (55.0, 3.0, 0.0, 0.0, 9.0, 0.0, 0.0, 1.5, gfx.nail.clone(), 0.10, false),
         ProjKind::Bolt => (20.0, 5.0, 0.0, 0.0, 10.0, 0.0, 0.0, 2.0, gfx.plasma.clone(), 0.18, false),
     };
+    // Grenades lob upward (see GRENADE_LOB); everything else fires flat along aim.
+    let lob = if matches!(kind, ProjKind::Grenade) { Vec3::Y * GRENADE_LOB } else { Vec3::ZERO };
     let mut e = commands.spawn((
         Mesh3d(gfx.sphere.clone()),
         MeshMaterial3d(mat),
         Transform::from_translation(pos + dir * 0.4).with_scale(Vec3::splat(scale)),
         Projectile {
-            vel: dir * speed,
+            vel: dir * speed + lob,
             life,
             fuse,
             gravity,

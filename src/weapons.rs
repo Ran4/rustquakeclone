@@ -721,7 +721,10 @@ pub(crate) fn fire_weapon(
                 inv.ammo[ai] -= LODESTONE_COST;
                 let origin = cam_gt.translation();
                 let forward = cam_gt.forward().as_vec3();
-                let muzzle = origin + forward * 0.6;
+                // Same gun-muzzle offset as primary fire (see below) so the well
+                // ball leaves the lower-right, not through your face.
+                let muzzle = origin + forward * 0.6 + cam_gt.right().as_vec3() * 0.16
+                    - cam_gt.up().as_vec3() * 0.18;
                 crate::projectiles::spawn_lodestone(&mut commands, &gfx, muzzle, forward, pe);
                 w.sfx.write(Sfx::at(Sound::Lodestone, muzzle));
                 w.shake.write(ScreenShake { amount: 0.1 });
@@ -746,7 +749,12 @@ pub(crate) fn fire_weapon(
 
     let origin = cam_gt.translation();
     let forward = cam_gt.forward().as_vec3();
-    let muzzle = origin + forward * 0.6;
+    // Projectiles, the muzzle flash and the whip draw leave from the gun muzzle —
+    // offset down-and-right of the eye, not dead-centre on the crosshair ray — so
+    // the slow "balls" don't spawn on your eyeline and fly through your view.
+    // Hitscan still traces from `origin` (the eye) so it hits exactly the crosshair.
+    let muzzle = origin + forward * 0.6 + cam_gt.right().as_vec3() * 0.16
+        - cam_gt.up().as_vec3() * 0.18;
 
     // Melee swings have no muzzle flash (it's a whip crack, not a gunshot).
     let melee = matches!(stats.mode, Mode::Melee { .. });

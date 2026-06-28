@@ -14,7 +14,7 @@
 
     // Which level a fresh run starts on: a number 1-11 (default 1), or "random".
     // Finishing a level still carries you into the next one regardless.
-    start_level: "8",
+    start_level: "3",
 
     // Hard cap on persistent carnage decals (blood, scorch, pellet pocks) kept
     // alive per level. Past this the oldest is recycled so a long fight stays

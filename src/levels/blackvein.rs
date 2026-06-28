@@ -81,8 +81,8 @@ pub fn build(b: &mut Build) {
     b.wall_z(-6.0, 2.0, 3.0, 8.0, 16.0, wall.clone(), &[]);
     b.ceiling(-3.0, 3.0, -6.0, 2.0, 16.0, ceil.clone());
     timber_frame(b, &timber, 0.0, -4.0, 8.0, 15.5, 1.4);
-    b.light(Vec3::new(0.0, 14.0, 8.0), rgb(1.0, 0.62, 0.28), 500_000.0, 30.0); // entry lantern
-    b.light(Vec3::new(0.0, 13.0, -2.0), rgb(1.0, 0.55, 0.22), 320_000.0, 22.0); // stair lantern
+    b.light(Vec3::new(0.0, 14.0, 8.0), rgb(1.0, 0.66, 0.34), 760_000.0, 42.0); // entry lantern
+    b.light(Vec3::new(0.0, 13.0, -2.0), rgb(1.0, 0.6, 0.3), 500_000.0, 32.0); // stair lantern
     b.monster(Grunt, Vec3::new(0.0, 9.0, -4.0)); // a guard posted on the stair
 
     // ======================================================================
@@ -154,10 +154,14 @@ pub fn build(b: &mut Build) {
     b.rail(&main, Some((2, &branch)), Some(5));
 
     // --- Pooled lanterns + ore veins raking the descent (read the markers) ---
-    b.light(Vec3::new(-3.0, 7.0, -24.0), rgb(1.0, 0.6, 0.25), 420_000.0, 26.0); // off the ledge
-    b.light(Vec3::new(2.0, 5.5, -38.0), rgb(1.0, 0.7, 0.3), 380_000.0, 24.0); // by the junction
-    b.light(Vec3::new(-2.0, 3.0, -52.0), rgb(1.0, 0.5, 0.2), 380_000.0, 26.0); // over the shaft
-    b.light(Vec3::new(2.0, 2.0, -64.0), rgb(0.9, 0.55, 0.45), 360_000.0, 26.0); // over the sump
+    b.light(Vec3::new(-3.0, 7.0, -24.0), rgb(1.0, 0.64, 0.3), 620_000.0, 36.0); // off the ledge
+    b.light(Vec3::new(2.0, 5.5, -38.0), rgb(1.0, 0.72, 0.34), 580_000.0, 34.0); // by the junction
+    b.light(Vec3::new(-2.0, 3.0, -52.0), rgb(1.0, 0.56, 0.26), 580_000.0, 36.0); // over the shaft
+    b.light(Vec3::new(2.0, 2.0, -64.0), rgb(0.95, 0.6, 0.5), 540_000.0, 36.0); // over the sump
+    // High fill lights slung from the cavern roof so the whole shaft reads, not
+    // just the pooled markers — the descent stays legible end to end.
+    b.light(Vec3::new(0.0, 17.0, -28.0), rgb(0.95, 0.7, 0.45), 900_000.0, 60.0);
+    b.light(Vec3::new(0.0, 17.0, -56.0), rgb(0.95, 0.66, 0.42), 900_000.0, 60.0);
     ore_seam(b, &ore, Vec3::new(-18.0, 9.0, -30.0), Vec3::new(-17.7, 13.0, -34.0));
     ore_seam(b, &ore, Vec3::new(17.7, 6.0, -42.0), Vec3::new(18.0, 11.0, -46.0));
     ore_seam(b, &ore, Vec3::new(-18.0, 2.0, -58.0), Vec3::new(-17.7, 7.0, -62.0));
@@ -212,8 +216,8 @@ pub fn build(b: &mut Build) {
     b.item(ItemKind::SilverKey, Vec3::new(0.0, 1.0, -82.0));
     b.item(ItemKind::Health(25), Vec3::new(-8.0, 0.6, -74.0));
     b.item(ItemKind::Nails(40), Vec3::new(8.0, 0.6, -74.0));
-    b.light(Vec3::new(0.0, 6.0, -80.0), rgb(1.0, 0.78, 0.55), 800_000.0, 40.0);
-    b.light(Vec3::new(0.0, 3.0, -72.0), rgb(1.0, 0.5, 0.2), 360_000.0, 24.0);
+    b.light(Vec3::new(0.0, 6.0, -80.0), rgb(1.0, 0.8, 0.58), 1_100_000.0, 50.0);
+    b.light(Vec3::new(0.0, 3.0, -72.0), rgb(1.0, 0.56, 0.26), 540_000.0, 32.0);
     ore_seam(b, &ore, Vec3::new(-18.0, 3.0, -78.0), Vec3::new(-17.7, 8.0, -82.0));
     ore_seam(b, &ore, Vec3::new(17.7, 3.0, -78.0), Vec3::new(18.0, 8.0, -82.0));
     timber_frame(b, &timber, 0.0, -84.0, 0.0, 19.5, 17.5);
@@ -242,10 +246,10 @@ pub fn build(b: &mut Build) {
     b.item(ItemKind::Health(25), Vec3::new(-6.0, 0.6, -88.0));
     b.item(ItemKind::Shells(20), Vec3::new(6.0, 0.6, -88.0));
     ore_seam(b, &ore, Vec3::new(-10.0, 4.0, -96.0), Vec3::new(-9.7, 6.5, -93.0));
-    b.light(Vec3::new(0.0, 5.0, -92.0), rgb(1.0, 0.6, 0.3), 600_000.0, 34.0);
+    b.light(Vec3::new(0.0, 5.0, -92.0), rgb(1.0, 0.64, 0.34), 820_000.0, 42.0);
 
-    // A dim, raking sun so the black rock keeps a faint silhouette top-to-bottom.
-    b.sun(Vec3::new(12.0, 30.0, -10.0), Vec3::new(0.0, 2.0, -50.0), rgb(0.42, 0.38, 0.42), 900.0);
+    // A raking sun so the black rock keeps a clear silhouette top-to-bottom.
+    b.sun(Vec3::new(12.0, 30.0, -10.0), Vec3::new(0.0, 2.0, -50.0), rgb(0.5, 0.46, 0.48), 1700.0);
 }
 
 /// A rough timber pit-prop frame (deco only): two posts of `half`-square section
