@@ -11,6 +11,7 @@ use crate::effects::{spawn_muzzle_flash, Lifetime};
 use crate::monster_model::nearest_limb_hit;
 use crate::mount::{ActiveMount, WhipHit};
 use crate::physics::{line_of_sight, ray_aabb, raycast_world, raycast_world_indexed, Aabb};
+use crate::pickups::{ball, cube, part_material, prim_mesh, skin, spike_fwd, tube_x, tube_z, Part};
 use crate::player::{Player, PlayerCamera};
 use crate::projectiles::{spawn_projectile, ProjKind, WhipParry};
 use crate::vehicle::{ActiveGunner, ActiveVehicle};
@@ -231,17 +232,27 @@ pub struct ViewKick {
     pub amount: f32,
 }
 
+/// The first-person view-model root (a child of the camera). Its children are
+/// the weapon's little-primitive model parts, rebuilt whenever the held weapon
+/// changes; `built` tracks which weapon's parts are currently spawned.
 #[derive(Component)]
-pub struct ViewModel;
-
-#[derive(Resource)]
-pub struct WeaponVis {
-    mats: Vec<Handle<StandardMaterial>>,
-    scales: Vec<Vec3>,
+pub struct ViewModel {
+    built: Option<WeaponKind>,
 }
 
-/// Build the weapon view-model materials once (idempotent). Runs at the front
-/// of the OnEnter(Playing) chain so it exists before any weapon system needs it.
+/// Prebuilt view-model geometry + per-part materials, one entry per weapon
+/// (indexed by `WeaponKind::index`). Built once so a weapon switch just respawns
+/// cheap child meshes against cached material handles.
+#[derive(Resource)]
+pub struct WeaponVis {
+    parts: Vec<Vec<Part>>,
+    mats: Vec<Vec<Handle<StandardMaterial>>>,
+}
+
+/// Build every weapon's view-model parts + materials once (idempotent). Runs at
+/// the front of the OnEnter(Playing) chain so it exists before any weapon system
+/// needs it. The geometry is the same little-primitive system the ground pickups
+/// use; the materials cache here so per-switch rebuilds allocate nothing.
 pub fn create_weapon_vis(
     mut commands: Commands,
     existing: Option<Res<WeaponVis>>,
@@ -251,48 +262,331 @@ pub fn create_weapon_vis(
     if existing.is_some() {
         return;
     }
-    // Skin each view-model with a weapon material. Natural materials use a WHITE
-    // base so the texture shows true; the painted sheet is tinted per weapon
-    // (base_color multiplies the texture). Emissive stays as the glow accent.
-    let mut mat = |tex: WeaponTex, c: Color, e: LinearRgba| {
-        materials.add(StandardMaterial {
-            base_color: c,
-            base_color_texture: Some(asset_server.load(tex.file())),
-            emissive: e,
-            perceptual_roughness: 0.4,
-            metallic: 0.6,
-            ..default()
-        })
-    };
-    use WeaponTex::*;
+    let mut parts = Vec::with_capacity(WeaponKind::ALL.len());
+    let mut mats = Vec::with_capacity(WeaponKind::ALL.len());
+    for kind in WeaponKind::ALL {
+        let p = viewmodel_parts(kind);
+        let m = p.iter().map(|part| part_material(part, &asset_server, &mut materials)).collect();
+        parts.push(p);
+        mats.push(m);
+    }
+    commands.insert_resource(WeaponVis { parts, mats });
+}
+
+/// Spawn the cached view-model parts for weapon `idx` as children of `root`.
+fn build_viewmodel(commands: &mut Commands, root: Entity, vis: &WeaponVis, gfx: &GfxAssets, idx: usize) {
+    commands.entity(root).with_children(|p| {
+        for (part, mat) in vis.parts[idx].iter().zip(vis.mats[idx].iter()) {
+            p.spawn((
+                Mesh3d(prim_mesh(part.prim, gfx)),
+                MeshMaterial3d(mat.clone()),
+                Transform { translation: part.pos, rotation: part.rot, scale: part.size },
+            ));
+        }
+    });
+}
+
+/// The first-person view-model geometry for a weapon — a parented set of
+/// little low-poly primitives (the same system the ground pickups use), built
+/// muzzle-forward (-Z) and skinned with weapon-material albedo textures. The
+/// glowing accents (muzzle rings, warheads, the lightning core) stay untextured
+/// so they bloom in the dark.
+pub(crate) fn viewmodel_parts(kind: WeaponKind) -> Vec<Part> {
+    match kind {
+        WeaponKind::Shotgun => vm_shotgun(),
+        WeaponKind::SuperShotgun => vm_super_shotgun(),
+        WeaponKind::Nailgun => vm_nailgun(),
+        WeaponKind::Grenade => vm_grenade_launcher(),
+        WeaponKind::Rocket => vm_rocket_launcher(),
+        WeaponKind::Lightning => vm_lightning_gun(),
+        WeaponKind::Whip => vm_whip(),
+    }
+}
+
+/// First-person view-model: Shotgun.
+fn vm_shotgun() -> Vec<Part> {
     let w = Color::WHITE;
-    let mats = vec![
-        mat(Gunmetal, w, LinearRgba::BLACK),                                   // shotgun
-        mat(Brass, w, LinearRgba::BLACK),                                      // ssg
-        mat(Steel, w, LinearRgba::BLACK),                                      // nailgun
-        mat(Painted, rgb(0.3, 0.55, 0.22), LinearRgba::rgb(0.05, 0.2, 0.02)),  // grenade
-        mat(Painted, rgb(0.6, 0.2, 0.14), LinearRgba::rgb(0.3, 0.05, 0.0)),    // rocket
-        mat(Painted, rgb(0.35, 0.5, 0.8), LinearRgba::rgb(0.2, 0.6, 1.5)),     // lightning
-        mat(Wood, w, LinearRgba::rgb(0.04, 0.01, 0.0)),                        // whip (leather)
-    ];
-    let scales = vec![
-        Vec3::new(0.14, 0.14, 0.6),
-        Vec3::new(0.2, 0.16, 0.55),
-        Vec3::new(0.16, 0.18, 0.7),
-        Vec3::new(0.18, 0.2, 0.5),
-        Vec3::new(0.2, 0.2, 0.75),
-        Vec3::new(0.16, 0.16, 0.8),
-        Vec3::new(0.12, 0.12, 0.4),
-    ];
-    commands.insert_resource(WeaponVis { mats, scales });
+    let metal_e = LinearRgba::rgb(0.05, 0.05, 0.07);
+    let steel_e = LinearRgba::rgb(0.07, 0.08, 0.10);
+    let wood_e = LinearRgba::rgb(0.06, 0.025, 0.008);
+    let muzzle = rgb(0.95, 0.72, 0.22);
+    let muzzle_e = LinearRgba::rgb(2.0, 1.2, 0.16);
+    let bead = rgb(1.0, 0.32, 0.18);
+    let bead_e = LinearRgba::rgb(2.6, 0.5, 0.22);
+    vec![
+        // gunmetal receiver — the main body, near the origin
+        skin(cube(Vec3::new(0.16, 0.16, 0.30), Vec3::new(0.0, 0.0, 0.0), w, metal_e), WeaponTex::Gunmetal),
+        // single steel barrel running forward (-Z)
+        skin(tube_z(0.10, 0.50, Vec3::new(0.0, 0.045, -0.28), w, steel_e), WeaponTex::Steel),
+        // tube magazine slung directly under the barrel
+        skin(tube_z(0.07, 0.42, Vec3::new(0.0, -0.02, -0.26), w, metal_e), WeaponTex::Gunmetal),
+        // sliding wood pump fore-grip wrapping the magazine tube
+        skin(tube_z(0.12, 0.15, Vec3::new(0.0, -0.02, -0.30), w, wood_e), WeaponTex::Wood),
+        // wood buttstock at the back (+Z)
+        skin(cube(Vec3::new(0.10, 0.15, 0.20), Vec3::new(0.0, -0.02, 0.23), w, wood_e), WeaponTex::Wood),
+        // wood pistol grip hanging down (-Y)
+        skin(cube(Vec3::new(0.08, 0.20, 0.10), Vec3::new(0.0, -0.14, 0.05), w, wood_e), WeaponTex::Wood),
+        // thin metal trigger guard under the receiver
+        skin(cube(Vec3::new(0.07, 0.04, 0.14), Vec3::new(0.0, -0.10, -0.04), w, metal_e), WeaponTex::Gunmetal),
+        // rear sight block on top of the receiver
+        skin(cube(Vec3::new(0.06, 0.04, 0.05), Vec3::new(0.0, 0.10, 0.10), w, metal_e), WeaponTex::Gunmetal),
+        // front sight post on top of the barrel near the muzzle
+        skin(cube(Vec3::new(0.02, 0.06, 0.03), Vec3::new(0.0, 0.12, -0.46), w, metal_e), WeaponTex::Gunmetal),
+        // glowing front-sight bead (untextured accent)
+        ball(0.035, Vec3::new(0.0, 0.155, -0.46), bead, bead_e),
+        // subtle muzzle ring at the tip (untextured glow accent)
+        tube_z(0.12, 0.04, Vec3::new(0.0, 0.045, -0.52), muzzle, muzzle_e),
+    ]
+}
+
+/// First-person view-model: Super Shotgun.
+fn vm_super_shotgun() -> Vec<Part> {
+    let w = Color::WHITE;
+    let metal_e = LinearRgba::rgb(0.05, 0.05, 0.07);
+    let brass_e = LinearRgba::rgb(0.28, 0.18, 0.04);
+    let wood_e = LinearRgba::rgb(0.06, 0.025, 0.008);
+    let steel_e = LinearRgba::rgb(0.06, 0.07, 0.1);
+    let glow_c = rgb(0.95, 0.72, 0.22);
+    let glow_e = LinearRgba::rgb(2.4, 1.4, 0.18);
+    vec![
+        // gunmetal receiver / breech body, sat near the origin
+        skin(cube(Vec3::new(0.26, 0.18, 0.34), Vec3::new(0.0, 0.0, 0.04), w, metal_e), WeaponTex::Gunmetal),
+        // raised breech block where the action breaks open to load shells
+        skin(cube(Vec3::new(0.22, 0.1, 0.13), Vec3::new(0.0, 0.07, 0.1), w, metal_e), WeaponTex::Gunmetal),
+        // twin fat brass barrels, side-by-side, muzzle toward -Z
+        skin(tube_z(0.11, 0.52, Vec3::new(-0.07, 0.03, -0.24), w, brass_e), WeaponTex::Brass),
+        skin(tube_z(0.11, 0.52, Vec3::new(0.07, 0.03, -0.24), w, brass_e), WeaponTex::Brass),
+        // ventilated steel top rib running between the two barrels
+        skin(cube(Vec3::new(0.2, 0.03, 0.5), Vec3::new(0.0, 0.09, -0.24), w, steel_e), WeaponTex::Steel),
+        // break-action hinge cross-pin (its heads poke out each side)
+        skin(tube_x(0.05, 0.3, Vec3::new(0.0, -0.02, -0.02), w, steel_e), WeaponTex::Steel),
+        // wood butt-stock toward the player
+        skin(cube(Vec3::new(0.13, 0.17, 0.22), Vec3::new(0.0, -0.04, 0.32), w, wood_e), WeaponTex::Wood),
+        // wood pistol grip hanging down
+        skin(cube(Vec3::new(0.1, 0.22, 0.12), Vec3::new(0.0, -0.16, 0.1), w, wood_e), WeaponTex::Wood),
+        // trigger + under-receiver guard bar
+        skin(cube(Vec3::new(0.02, 0.06, 0.02), Vec3::new(0.0, -0.12, 0.06), w, metal_e), WeaponTex::Gunmetal),
+        skin(cube(Vec3::new(0.04, 0.02, 0.14), Vec3::new(0.0, -0.15, 0.06), w, metal_e), WeaponTex::Gunmetal),
+        // rear sight notch on top of the breech
+        skin(cube(Vec3::new(0.05, 0.05, 0.04), Vec3::new(0.0, 0.14, 0.15), w, metal_e), WeaponTex::Gunmetal),
+        // bright glowing muzzle rings at the twin mouths (untextured glow)
+        tube_z(0.13, 0.05, Vec3::new(-0.07, 0.03, -0.49), glow_c, glow_e),
+        tube_z(0.13, 0.05, Vec3::new(0.07, 0.03, -0.49), glow_c, glow_e),
+        // glowing front bead sight perched on the rib near the muzzle
+        ball(0.035, Vec3::new(0.0, 0.11, -0.46), rgb(1.0, 0.85, 0.4), LinearRgba::rgb(2.2, 1.6, 0.5)),
+    ]
+}
+
+/// First-person view-model: Nailgun.
+fn vm_nailgun() -> Vec<Part> {
+    let w = Color::WHITE;
+    // A touch brighter than pitch-black so the gunmetal body reads in shadow.
+    let metal_e = LinearRgba::rgb(0.13, 0.14, 0.18);
+    let steel_e = LinearRgba::rgb(0.4, 0.45, 0.7);
+    let nail = rgb(0.85, 0.9, 1.0);
+    let nail_e = LinearRgba::rgb(1.2, 1.4, 2.0);
+    let glow = rgb(0.7, 0.82, 1.0);
+    let glow_e = LinearRgba::rgb(1.4, 1.9, 2.9);
+    vec![
+        // receiver — main gunmetal body near the origin
+        skin(cube(Vec3::new(0.22, 0.2, 0.32), Vec3::new(0.0, 0.0, -0.02), w, metal_e), WeaponTex::Gunmetal),
+        // top feed cover / rail on the receiver
+        skin(cube(Vec3::new(0.16, 0.07, 0.3), Vec3::new(0.0, 0.11, -0.05), w, metal_e), WeaponTex::Gunmetal),
+        // twin thin steel spike-barrels, spread apart so the pair reads as two
+        skin(tube_z(0.06, 0.5, Vec3::new(-0.085, 0.05, -0.27), w, steel_e), WeaponTex::Steel),
+        skin(tube_z(0.06, 0.5, Vec3::new(0.085, 0.05, -0.27), w, steel_e), WeaponTex::Steel),
+        // clamp band holding the barrel pair together near the front
+        skin(tube_x(0.05, 0.26, Vec3::new(0.0, 0.05, -0.44), w, metal_e), WeaponTex::Gunmetal),
+        // nail tips peeking out of each barrel mouth (bright steel, untextured glow)
+        spike_fwd(0.05, 0.12, Vec3::new(-0.085, 0.05, -0.57), nail, nail_e),
+        spike_fwd(0.05, 0.12, Vec3::new(0.085, 0.05, -0.57), nail, nail_e),
+        // big round drum magazine slung under the receiver
+        skin(tube_z(0.28, 0.13, Vec3::new(0.0, -0.1, 0.0), w, metal_e), WeaponTex::Gunmetal),
+        // glowing loaded-nail core on the drum face (untextured accent)
+        tube_z(0.11, 0.05, Vec3::new(0.0, -0.1, 0.07), glow, glow_e),
+        // feed chute bridging the drum up into the barrel breech
+        skin(cube(Vec3::new(0.12, 0.13, 0.12), Vec3::new(0.0, -0.03, -0.13), w, metal_e), WeaponTex::Gunmetal),
+        // pistol grip hanging down toward the player
+        skin(cube(Vec3::new(0.09, 0.22, 0.1), Vec3::new(0.0, -0.16, 0.1), w, metal_e), WeaponTex::Gunmetal),
+        // trigger guard bar linking grip to receiver
+        skin(tube_x(0.03, 0.1, Vec3::new(0.0, -0.1, 0.05), w, metal_e), WeaponTex::Gunmetal),
+        // front sight blade standing on the clamp band
+        skin(cube(Vec3::new(0.02, 0.08, 0.03), Vec3::new(0.0, 0.11, -0.44), w, metal_e), WeaponTex::Gunmetal),
+    ]
+}
+
+/// First-person view-model: Grenade Launcher.
+fn vm_grenade_launcher() -> Vec<Part> {
+    let w = Color::WHITE;
+    let body = rgb(0.32, 0.52, 0.22);
+    let body_e = LinearRgba::rgb(0.06, 0.2, 0.03);
+    let metal_e = LinearRgba::rgb(0.05, 0.05, 0.07);
+    let bore = rgb(0.13, 0.14, 0.16);
+    let bore_e = LinearRgba::rgb(0.02, 0.02, 0.03);
+    let glow = rgb(0.35, 0.95, 0.28);
+    let glow_e = LinearRgba::rgb(0.4, 2.4, 0.18);
+    vec![
+        // green receiver / main body
+        skin(cube(Vec3::new(0.22, 0.2, 0.3), Vec3::new(0.0, 0.0, 0.06), body, body_e), WeaponTex::Painted),
+        // big revolver drum bulging below/around the receiver
+        skin(tube_z(0.3, 0.16, Vec3::new(0.0, -0.05, 0.05), body, body_e), WeaponTex::Painted),
+        // ring of chamber bores around the drum (reads as a cylinder of chambers from the rear)
+        skin(tube_z(0.07, 0.2, Vec3::new(0.0, 0.05, 0.05), bore, bore_e), WeaponTex::Gunmetal),    // top firing chamber (behind barrel)
+        skin(tube_z(0.07, 0.2, Vec3::new(0.087, 0.0, 0.05), bore, bore_e), WeaponTex::Gunmetal),
+        skin(tube_z(0.07, 0.2, Vec3::new(-0.087, 0.0, 0.05), bore, bore_e), WeaponTex::Gunmetal),
+        skin(tube_z(0.07, 0.2, Vec3::new(0.087, -0.1, 0.05), bore, bore_e), WeaponTex::Gunmetal),
+        skin(tube_z(0.07, 0.2, Vec3::new(-0.087, -0.1, 0.05), bore, bore_e), WeaponTex::Gunmetal),
+        skin(tube_z(0.07, 0.2, Vec3::new(0.0, -0.15, 0.05), bore, bore_e), WeaponTex::Gunmetal),
+        // a live round glowing green in one chamber, peeking out the rear face
+        ball(0.06, Vec3::new(0.087, -0.1, 0.15), glow, glow_e),
+        // fat short barrel (gunmetal), muzzle toward -Z
+        skin(tube_z(0.2, 0.44, Vec3::new(0.0, 0.03, -0.2), w, metal_e), WeaponTex::Gunmetal),
+        // bright glowing green muzzle ring + loaded grenade at the mouth (untextured glow)
+        tube_z(0.25, 0.06, Vec3::new(0.0, 0.03, -0.45), glow, glow_e),
+        ball(0.16, Vec3::new(0.0, 0.03, -0.47), glow, glow_e),
+        // top sights: rear notch on the receiver + front post near the muzzle
+        skin(cube(Vec3::new(0.06, 0.07, 0.05), Vec3::new(0.0, 0.13, 0.13), w, metal_e), WeaponTex::Gunmetal),
+        skin(cube(Vec3::new(0.03, 0.07, 0.04), Vec3::new(0.0, 0.15, -0.38), w, metal_e), WeaponTex::Gunmetal),
+        // pistol grip hanging down/back
+        skin(cube(Vec3::new(0.1, 0.22, 0.12), Vec3::new(0.0, -0.18, 0.17), body, body_e), WeaponTex::Painted),
+        // trigger + guard bar under the receiver, in front of the grip
+        skin(cube(Vec3::new(0.03, 0.07, 0.03), Vec3::new(0.0, -0.1, 0.11), w, metal_e), WeaponTex::Gunmetal),
+        skin(cube(Vec3::new(0.03, 0.03, 0.14), Vec3::new(0.0, -0.14, 0.1), w, metal_e), WeaponTex::Gunmetal),
+    ]
+}
+
+/// First-person view-model: Rocket Launcher.
+fn vm_rocket_launcher() -> Vec<Part> {
+    let w = Color::WHITE;
+    // textured-body emissives (so they aren't pitch black in shadow)
+    let tube_e = LinearRgba::rgb(0.06, 0.06, 0.08);
+    // red painted casing / grip (tint multiplies the Painted sheet)
+    let band = rgb(0.55, 0.16, 0.12);
+    let band_e = LinearRgba::rgb(0.35, 0.05, 0.02);
+    // glowing orange rocket poking out the muzzle (untextured, strong emissive)
+    let head = rgb(1.0, 0.55, 0.15);
+    let head_e = LinearRgba::rgb(3.2, 1.1, 0.18);
+    // glowing exhaust throat in the rear venturi (untextured)
+    let burn = rgb(0.95, 0.45, 0.15);
+    let burn_e = LinearRgba::rgb(2.2, 0.8, 0.12);
+    vec![
+        // --- big gunmetal launch tube (muzzle toward -Z) ---
+        skin(tube_z(0.27, 0.58, Vec3::new(0.0, 0.02, -0.04), w, tube_e), WeaponTex::Gunmetal),
+        // red painted casing band near the rear of the tube
+        skin(tube_z(0.31, 0.16, Vec3::new(0.0, 0.02, 0.08), band, band_e), WeaponTex::Painted),
+        // rear exhaust / venturi ring + glowing throat (faces the player from 3/4 rear)
+        skin(tube_z(0.32, 0.09, Vec3::new(0.0, 0.02, 0.27), w, tube_e), WeaponTex::Gunmetal),
+        tube_z(0.17, 0.06, Vec3::new(0.0, 0.02, 0.30), burn, burn_e),
+        // --- loaded rocket poking out the front: glowing body + warhead cone ---
+        tube_z(0.13, 0.16, Vec3::new(0.0, 0.02, -0.41), head, head_e),
+        spike_fwd(0.13, 0.15, Vec3::new(0.0, 0.02, -0.55), head, head_e),
+        // --- top sight rail with front post + rear blade ---
+        skin(cube(Vec3::new(0.05, 0.06, 0.3), Vec3::new(0.0, 0.18, -0.05), w, tube_e), WeaponTex::Gunmetal),
+        skin(cube(Vec3::new(0.04, 0.08, 0.04), Vec3::new(0.0, 0.21, -0.18), w, tube_e), WeaponTex::Gunmetal),
+        skin(cube(Vec3::new(0.08, 0.06, 0.04), Vec3::new(0.0, 0.21, 0.07), w, tube_e), WeaponTex::Gunmetal),
+        // --- receiver / trigger housing bridging tube to grip ---
+        skin(cube(Vec3::new(0.13, 0.12, 0.18), Vec3::new(0.0, -0.06, 0.04), w, tube_e), WeaponTex::Gunmetal),
+        // trigger-guard bar
+        skin(cube(Vec3::new(0.04, 0.03, 0.13), Vec3::new(0.0, -0.14, -0.04), w, tube_e), WeaponTex::Gunmetal),
+        // --- red pistol grip hanging down ---
+        skin(cube(Vec3::new(0.1, 0.24, 0.12), Vec3::new(0.0, -0.2, 0.05), band, band_e), WeaponTex::Painted),
+    ]
+}
+
+/// First-person view-model: Lightning Gun.
+fn vm_lightning_gun() -> Vec<Part> {
+    let w = Color::WHITE;
+    let body = rgb(0.22, 0.34, 0.6);
+    let body_e = LinearRgba::rgb(0.07, 0.17, 0.42);
+    let metal_e = LinearRgba::rgb(0.05, 0.05, 0.07);
+    // Emissives are far lower than the ground-pickup lightning gun: a view-model
+    // sits point-blank in front of the bloom-enabled camera, so the pickup's hot
+    // values (core blue ~6.5) would blow out into a screen-filling white disc.
+    let core = rgb(0.65, 0.92, 1.0);
+    let core_e = LinearRgba::rgb(0.25, 0.9, 2.0);
+    let ring = rgb(0.5, 0.86, 1.0);
+    let ring_e = LinearRgba::rgb(0.2, 0.8, 1.8);
+    let prong = rgb(0.82, 0.88, 0.97);
+    let prong_e = LinearRgba::rgb(0.3, 0.8, 1.6);
+    let arc = rgb(0.9, 0.97, 1.0);
+    let arc_e = LinearRgba::rgb(0.5, 1.2, 2.4);
+    vec![
+        // --- blue painted receiver body (main bulk near origin) ---
+        skin(cube(Vec3::new(0.22, 0.2, 0.32), Vec3::new(0.0, 0.0, 0.05), body, body_e), WeaponTex::Painted),
+        // top sight rail + rear notch
+        skin(cube(Vec3::new(0.05, 0.05, 0.2), Vec3::new(0.0, 0.13, 0.04), w, metal_e), WeaponTex::Gunmetal),
+        skin(cube(Vec3::new(0.07, 0.04, 0.04), Vec3::new(0.0, 0.15, 0.13), w, metal_e), WeaponTex::Gunmetal),
+        // gunmetal bolt pin through the receiver (mechanical detail)
+        skin(tube_x(0.05, 0.26, Vec3::new(0.0, 0.0, 0.04), w, metal_e), WeaponTex::Gunmetal),
+        // --- barrel shroud (blue painted) running forward (-Z) ---
+        skin(tube_z(0.14, 0.4, Vec3::new(0.0, 0.02, -0.18), body, body_e), WeaponTex::Painted),
+        // inner gunmetal barrel poking through the shroud to the emitter
+        skin(tube_z(0.09, 0.46, Vec3::new(0.0, 0.02, -0.21), w, metal_e), WeaponTex::Gunmetal),
+        // --- three glowing cyan coil rings around the shroud (untextured glow) ---
+        tube_z(0.19, 0.04, Vec3::new(0.0, 0.02, -0.06), ring, ring_e),
+        tube_z(0.19, 0.04, Vec3::new(0.0, 0.02, -0.19), ring, ring_e),
+        tube_z(0.19, 0.04, Vec3::new(0.0, 0.02, -0.32), ring, ring_e),
+        // --- emitter core ball at the muzzle ---
+        ball(0.14, Vec3::new(0.0, 0.02, -0.46), core, core_e),
+        // --- two emitter prongs extending forward past the core ---
+        tube_z(0.055, 0.3, Vec3::new(-0.1, 0.02, -0.52), prong, prong_e),
+        tube_z(0.055, 0.3, Vec3::new(0.1, 0.02, -0.52), prong, prong_e),
+        // prong tip caps
+        ball(0.06, Vec3::new(-0.1, 0.02, -0.67), arc, arc_e),
+        ball(0.06, Vec3::new(0.1, 0.02, -0.67), arc, arc_e),
+        // arc-gap crackle: a thin bright bar leaping the gap between the prong tips
+        tube_x(0.025, 0.2, Vec3::new(0.0, 0.02, -0.6), arc, arc_e),
+        ball(0.05, Vec3::new(0.0, 0.02, -0.6), arc, arc_e),
+        // --- gunmetal pistol grip (hangs down) + trigger ---
+        skin(cube(Vec3::new(0.09, 0.22, 0.11), Vec3::new(0.0, -0.13, 0.03), w, metal_e), WeaponTex::Gunmetal),
+        skin(cube(Vec3::new(0.03, 0.08, 0.04), Vec3::new(0.0, -0.06, -0.05), w, metal_e), WeaponTex::Gunmetal),
+    ]
+}
+
+/// First-person view-model: Whip.
+fn vm_whip() -> Vec<Part> {
+    let w = Color::WHITE;
+    // dark brown leather tint for the lash so it reads distinct from the lighter wood grip
+    let leather = rgb(0.5, 0.32, 0.18);
+    let wood_e = LinearRgba::rgb(0.05, 0.02, 0.008);
+    let lash_e = LinearRgba::rgb(0.04, 0.01, 0.0);
+    // Muted so the steel pommel reads as metal, not a glowing white orb.
+    let steel_e = LinearRgba::rgb(0.12, 0.14, 0.18);
+    let brass_e = LinearRgba::rgb(0.25, 0.16, 0.03);
+    vec![
+        // --- handle (held in the hand) -------------------------------------
+        // wood grip, gripped along Z, butt toward the player (+Z)
+        skin(tube_z(0.09, 0.30, Vec3::new(0.0, -0.02, 0.09), w, wood_e), WeaponTex::Wood),
+        // steel pommel ball capping the butt (sized to the handle, not oversized)
+        skin(ball(0.095, Vec3::new(0.0, -0.02, 0.23), w, steel_e), WeaponTex::Steel),
+        // brass collar / guard where the lash attaches to the front of the grip
+        skin(tube_z(0.125, 0.06, Vec3::new(0.0, -0.02, -0.07), w, brass_e), WeaponTex::Brass),
+
+        // --- leather lash: tapering beaded coil that dips down then curls up -
+        // straight base section forward of the collar
+        skin(tube_z(0.082, 0.12, Vec3::new(0.005, -0.05, -0.15), leather, lash_e), WeaponTex::Wood),
+        // beaded coil, diameters shrinking toward the tip, y dips to a hanging
+        // low point (~-0.16) then rises back up toward the muzzle end
+        skin(ball(0.075, Vec3::new(0.01, -0.10, -0.24), leather, lash_e), WeaponTex::Wood),
+        skin(ball(0.067, Vec3::new(0.02, -0.14, -0.30), leather, lash_e), WeaponTex::Wood),
+        skin(ball(0.059, Vec3::new(0.03, -0.16, -0.36), leather, lash_e), WeaponTex::Wood),
+        skin(ball(0.051, Vec3::new(0.03, -0.15, -0.42), leather, lash_e), WeaponTex::Wood),
+        skin(ball(0.043, Vec3::new(0.02, -0.12, -0.47), leather, lash_e), WeaponTex::Wood),
+        skin(ball(0.036, Vec3::new(0.01, -0.08, -0.51), leather, lash_e), WeaponTex::Wood),
+        skin(ball(0.030, Vec3::new(0.0, -0.05, -0.54), leather, lash_e), WeaponTex::Wood),
+
+        // --- frayed metal tip + faint spark accent -------------------------
+        // small steel cracker tip, apex pointing forward (-Z)
+        skin(spike_fwd(0.038, 0.06, Vec3::new(0.0, -0.045, -0.575), w, steel_e), WeaponTex::Steel),
+        // tiny untextured glow at the very tip (the whip's crack point)
+        ball(0.022, Vec3::new(0.0, -0.045, -0.60), rgb(1.0, 0.85, 0.55), LinearRgba::rgb(2.2, 1.3, 0.5)),
+    ]
 }
 
 /// Insert inventory on the player and attach a view-model to the camera.
 /// Runs in the OnEnter(Playing) chain right after the player is spawned.
 pub fn setup_player_weapons(
     mut commands: Commands,
-    vis: Res<WeaponVis>,
-    gfx: Res<GfxAssets>,
     run: Res<RunState>,
     q_player: Query<Entity, With<Player>>,
     q_cam: Query<Entity, With<PlayerCamera>>,
@@ -313,12 +607,14 @@ pub fn setup_player_weapons(
         commands.entity(pe).insert(Grapple::default());
     }
     if let Ok(ce) = q_cam.single() {
+        // The view-model is an empty root parented to the camera, held in the
+        // lower-right. Its weapon parts are spawned by `update_viewmodel` on the
+        // first frame (built: None forces an initial build for the current weapon).
         commands.entity(ce).with_children(|p| {
             p.spawn((
-                Mesh3d(gfx.unit_cube.clone()),
-                MeshMaterial3d(vis.mats[0].clone()),
-                Transform::from_xyz(0.32, -0.3, -0.75).with_scale(vis.scales[0]),
-                ViewModel,
+                Transform::from_xyz(0.32, -0.3, -0.75),
+                Visibility::default(),
+                ViewModel { built: None },
             ));
         });
     }
@@ -886,17 +1182,19 @@ fn beam_segment(commands: &mut Commands, gfx: &GfxAssets, a: Vec3, b: Vec3, w: f
 }
 
 fn update_viewmodel(
+    mut commands: Commands,
     time: Res<Time>,
     mut kick: ResMut<ViewKick>,
     vis: Res<WeaponVis>,
+    gfx: Res<GfxAssets>,
     active_gunner: Res<ActiveGunner>,
     q_player: Query<(&Inventory, &Player)>,
-    mut q_vm: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>, &mut Visibility), With<ViewModel>>,
+    mut q_vm: Query<(Entity, &mut Transform, &mut Visibility, &mut ViewModel, Option<&Children>)>,
 ) {
     let dt = time.delta_secs();
     kick.amount = (kick.amount - dt * 6.0).max(0.0);
     let Ok((inv, player)) = q_player.single() else { return };
-    let Ok((mut tf, mut mat, mut vmvis)) = q_vm.single_mut() else { return };
+    let Ok((root, mut tf, mut vmvis, mut vm, children)) = q_vm.single_mut() else { return };
     // Stow the first-person hand weapon entirely while crewing the pintle cannon —
     // the deck gun is the active weapon, so hide the view-model and skip its bob/kick.
     let stow = active_gunner.0.is_some();
@@ -907,15 +1205,21 @@ fn update_viewmodel(
     if stow {
         return;
     }
-    let idx = inv.current.index();
-    if mat.0 != vis.mats[idx] {
-        mat.0 = vis.mats[idx].clone();
+    // Rebuild the model whenever the held weapon changes: despawn the old parts and
+    // spawn the new weapon's cached parts. Each weapon is a full multi-part gun.
+    if vm.built != Some(inv.current) {
+        if let Some(children) = children {
+            for &c in children {
+                commands.entity(c).despawn();
+            }
+        }
+        build_viewmodel(&mut commands, root, &vis, &gfx, inv.current.index());
+        vm.built = Some(inv.current);
     }
     let bx = (player.bob).sin() * 0.012;
     let by = ((player.bob * 2.0).sin()).abs() * 0.012;
     let base = Vec3::new(0.32, -0.3, -0.75);
     tf.translation = base + Vec3::new(bx, by, kick.amount.min(1.0) * 0.18);
-    tf.scale = vis.scales[idx];
     tf.rotation = Quat::from_rotation_x(-kick.amount.min(1.0) * 0.2);
 }
 

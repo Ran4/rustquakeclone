@@ -36,62 +36,96 @@ pub struct Item {
 // ----------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-enum Prim {
+pub(crate) enum Prim {
     Cube,
     Cyl,
     Cone,
     Ball,
 }
 
-/// One mesh of a pickup model, in the item's local space.
+/// One mesh of a pickup (or weapon view-model) model, in the model's local
+/// space. The same little-primitive system builds both the ground-pickup props
+/// and the first-person view-models (see `weapons::viewmodel_parts`).
 #[derive(Clone, Copy)]
-struct Part {
-    prim: Prim,
-    size: Vec3, // full dimensions applied to the unit mesh
-    pos: Vec3,
-    rot: Quat,
-    color: Color,
-    emissive: LinearRgba,
-    metallic: f32,
+pub(crate) struct Part {
+    pub(crate) prim: Prim,
+    pub(crate) size: Vec3, // full dimensions applied to the unit mesh
+    pub(crate) pos: Vec3,
+    pub(crate) rot: Quat,
+    pub(crate) color: Color,
+    pub(crate) emissive: LinearRgba,
+    pub(crate) metallic: f32,
     /// Weapon-material albedo skin, or `None` for a flat-coloured/glowing part.
-    /// Only the weapon models set this; ammo/health/armor/key stay untextured.
-    tex: Option<WeaponTex>,
+    /// Weapon models set this; ammo/health/armor/key stay untextured.
+    pub(crate) tex: Option<WeaponTex>,
 }
 
 /// A box (full size).
-fn cube(size: Vec3, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
+pub(crate) fn cube(size: Vec3, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
     Part { prim: Prim::Cube, size, pos, rot: Quat::IDENTITY, color, emissive, metallic: 0.6, tex: None }
 }
-/// A cylinder of diameter `d` and length `len` lying along local +Z.
-fn tube_z(d: f32, len: f32, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
+/// A cylinder of diameter `d` and length `len` lying along local Z.
+pub(crate) fn tube_z(d: f32, len: f32, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
     Part { prim: Prim::Cyl, size: Vec3::new(d, len, d), pos, rot: Quat::from_rotation_x(FRAC_PI_2), color, emissive, metallic: 0.6, tex: None }
 }
 /// A cylinder of diameter `d` and length `len` standing along local +Y.
-fn tube_y(d: f32, len: f32, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
+pub(crate) fn tube_y(d: f32, len: f32, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
     Part { prim: Prim::Cyl, size: Vec3::new(d, len, d), pos, rot: Quat::IDENTITY, color, emissive, metallic: 0.6, tex: None }
 }
+/// A cylinder of diameter `d` and length `len` lying along local X — cross pins,
+/// trigger-guard bars, hinge rods.
+pub(crate) fn tube_x(d: f32, len: f32, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
+    Part { prim: Prim::Cyl, size: Vec3::new(d, len, d), pos, rot: Quat::from_rotation_z(FRAC_PI_2), color, emissive, metallic: 0.6, tex: None }
+}
 /// A cone (apex toward +Z) of base diameter `d` and length `len` — a warhead nose.
-fn spike_z(d: f32, len: f32, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
+pub(crate) fn spike_z(d: f32, len: f32, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
     Part { prim: Prim::Cone, size: Vec3::new(d, len, d), pos, rot: Quat::from_rotation_x(FRAC_PI_2), color, emissive, metallic: 0.3, tex: None }
 }
+/// A cone with its apex toward -Z (forward, in view-model space) — a muzzle
+/// spike / forward-pointing warhead on the first-person view-models.
+pub(crate) fn spike_fwd(d: f32, len: f32, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
+    Part { prim: Prim::Cone, size: Vec3::new(d, len, d), pos, rot: Quat::from_rotation_x(-FRAC_PI_2), color, emissive, metallic: 0.3, tex: None }
+}
 /// A cone pointing up (+Y) — a standing nail / rocket nose.
-fn spike_y(d: f32, len: f32, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
+pub(crate) fn spike_y(d: f32, len: f32, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
     Part { prim: Prim::Cone, size: Vec3::new(d, len, d), pos, rot: Quat::IDENTITY, color, emissive, metallic: 0.3, tex: None }
 }
 /// A sphere of diameter `d`.
-fn ball(d: f32, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
+pub(crate) fn ball(d: f32, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
     Part { prim: Prim::Ball, size: Vec3::splat(d), pos, rot: Quat::IDENTITY, color, emissive, metallic: 0.3, tex: None }
 }
 /// A cone with explicit (non-uniform) dimensions, apex pointing down (-Y) — the
 /// pointed bottom of an armor shield.
-fn cone_down(size: Vec3, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
+pub(crate) fn cone_down(size: Vec3, pos: Vec3, color: Color, emissive: LinearRgba) -> Part {
     Part { prim: Prim::Cone, size, pos, rot: Quat::from_rotation_x(PI), color, emissive, metallic: 0.5, tex: None }
 }
 /// Skin a part with a weapon-material albedo texture (the part's `color` then
 /// acts as a tint that multiplies the texture — pass `Color::WHITE` for the
 /// material's true albedo, or a colour to tint the neutral `Painted` sheet).
-fn skin(part: Part, tex: WeaponTex) -> Part {
+pub(crate) fn skin(part: Part, tex: WeaponTex) -> Part {
     Part { tex: Some(tex), ..part }
+}
+
+/// The shared unit mesh for a primitive (cube/cylinder/cone/sphere).
+pub(crate) fn prim_mesh(prim: Prim, gfx: &GfxAssets) -> Handle<Mesh> {
+    match prim {
+        Prim::Cube => gfx.unit_cube.clone(),
+        Prim::Cyl => gfx.cylinder.clone(),
+        Prim::Cone => gfx.cone.clone(),
+        Prim::Ball => gfx.sphere.clone(),
+    }
+}
+
+/// Build the `StandardMaterial` for one part (albedo skin or flat colour + glow).
+pub(crate) fn part_material(part: &Part, assets: &AssetServer, materials: &mut Assets<StandardMaterial>) -> Handle<StandardMaterial> {
+    materials.add(StandardMaterial {
+        base_color: part.color,
+        base_color_texture: part.tex.map(|t| assets.load(t.file())),
+        emissive: part.emissive,
+        perceptual_roughness: 0.4,
+        metallic: part.metallic,
+        ..default()
+    })
 }
 
 /// The mesh parts that make up a pickup — every kind is a little hand-built
@@ -374,23 +408,9 @@ pub fn spawn_pickup(
         ))
         .with_children(|p| {
             for part in &parts {
-                let mesh = match part.prim {
-                    Prim::Cube => gfx.unit_cube.clone(),
-                    Prim::Cyl => gfx.cylinder.clone(),
-                    Prim::Cone => gfx.cone.clone(),
-                    Prim::Ball => gfx.sphere.clone(),
-                };
-                let mat = materials.add(StandardMaterial {
-                    base_color: part.color,
-                    base_color_texture: part.tex.map(|t| assets.load(t.file())),
-                    emissive: part.emissive,
-                    perceptual_roughness: 0.4,
-                    metallic: part.metallic,
-                    ..default()
-                });
                 p.spawn((
-                    Mesh3d(mesh),
-                    MeshMaterial3d(mat),
+                    Mesh3d(prim_mesh(part.prim, gfx)),
+                    MeshMaterial3d(part_material(part, assets, materials)),
                     Transform { translation: part.pos, rotation: part.rot, scale: part.size },
                 ));
             }

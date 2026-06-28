@@ -30,6 +30,7 @@ mod rail;
 mod resonance;
 mod vehicle;
 mod weapons;
+mod weaponshot;
 mod web;
 
 use bevy::asset::AssetPlugin;
@@ -60,7 +61,8 @@ fn main() {
     let gallery = std::env::var("QC_GALLERY").is_ok();
     let levelshot = std::env::var("QC_LEVELSHOT").is_ok();
     let itemshot = std::env::var("QC_ITEMSHOT").is_ok();
-    let preview = gallery || levelshot || itemshot; // debug screenshot modes: small window, fast saves
+    let weaponshot = std::env::var("QC_WEAPONSHOT").is_ok();
+    let preview = gallery || levelshot || itemshot || weaponshot; // debug screenshot modes: small window, fast saves
     let cfg = config::Config::load();
     // Synthesize the SFX set into <assets>/sounds/ before the engine starts so
     // the AssetServer (pointed at the same dir) can load them.
@@ -169,6 +171,9 @@ fn main() {
     } else if itemshot {
         app.add_systems(OnEnter(GameState::Playing), (weapons::create_weapon_vis, itemshot::setup))
             .add_systems(Update, itemshot::tick.run_if(in_state(GameState::Playing)));
+    } else if weaponshot {
+        app.add_systems(OnEnter(GameState::Playing), (weapons::create_weapon_vis, weaponshot::setup))
+            .add_systems(Update, weaponshot::tick.run_if(in_state(GameState::Playing)));
     } else {
         app.add_plugins(hud::HudPlugin).add_systems(
             OnEnter(GameState::Playing),

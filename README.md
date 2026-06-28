@@ -201,6 +201,7 @@ which are gitignored build artifacts) because they're not reproducible without t
 | `monster_model.rs` | Procedural skeletal monster rigs, textures, bone animation + death topple |
 | `gallery.rs` | `QC_GALLERY=1` debug mode: render each monster solo and screenshot it |
 | `itemshot.rs` | `QC_ITEMSHOT=1` debug mode: render each pickup solo and screenshot it |
+| `weaponshot.rs` | `QC_WEAPONSHOT=1` debug mode: render each held weapon view-model solo and screenshot it |
 | `pickups.rs` | Health, armor, ammo, weapons, key (every pickup is a little hand-built low-poly model) |
 | `level.rs` | Themed material palettes, the `Build` level-authoring API, level registry + dispatch |
 | `levels/` | One module per level (`level1`..`level8`) — each a `build(&mut Build)` map |
@@ -227,6 +228,10 @@ Run `QC_GALLERY=1 cargo run` to spawn each monster in turn, lit and centered, an
 
 Run `QC_ITEMSHOT=1 cargo run` to render each pickup in turn, lit and centered, and save a close-up
 `itemshot_<n>_<name>.png` of every model — handy for eyeballing the pickup props.
+
+Run `QC_WEAPONSHOT=1 cargo run` to render each first-person weapon view-model in turn, lit and
+framed from behind the muzzle, and save a close-up `weaponshot_<n>_<name>.png` of every held gun —
+handy for eyeballing the view-models in isolation.
 
 Run `QC_LEVELSHOT=1 cargo run` to build each level in turn and save `levelshot_<n>_<name>.png` from
 the player's entry vantage — handy for eyeballing every level's geometry, textures and lighting.
