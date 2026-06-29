@@ -1190,7 +1190,9 @@ impl<'a, 'w, 's> Build<'a, 'w, 's> {
             return;
         }
         let mat = self.theme.trim.clone();
-        const SPACING: f32 = 1.5;
+        // Tight spacing so a rounded bend reads as a smooth curve of ties rather
+        // than a few faceted blocks (the cart path is already a smooth fillet).
+        const SPACING: f32 = 0.7;
         for w in track.windows(2) {
             let (a, b) = (w[0], w[1]);
             let seg = b - a;

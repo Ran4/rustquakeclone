@@ -192,8 +192,8 @@ fn wrap_angle(a: f32) -> f32 {
 /// Default fillet radius (m) and segment count for rounding an authored rail's
 /// corners — used by [`spawn_cart`] (the cart path) and [`crate::level::Build::rail`]
 /// (the visible cross-ties), so both follow the same rounded curve.
-pub(crate) const CORNER_R: f32 = 2.5;
-pub(crate) const CORNER_SEGS: usize = 6;
+pub(crate) const CORNER_R: f32 = 6.0;
+pub(crate) const CORNER_SEGS: usize = 16;
 
 /// Round the hard corners of an authored rail polyline into short quadratic-Bezier
 /// fillets, so the cart sweeps THROUGH a turn instead of snapping at the kink.
